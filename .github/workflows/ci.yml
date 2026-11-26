@@ -150,9 +150,13 @@ jobs:
         shell: bash
     steps:
       # Check out with LF line endings, as on Linux and macOS, so that
-      # `deno fmt --check` sees the same files.
+      # `deno fmt --check` sees the same files. .gitattributes sets
+      # `* text=auto`, which uses core.eol (native CRLF on Windows), so set
+      # both settings. *.bat keeps eol=crlf from .gitattributes.
       - name: Keep LF line endings
-        run: git config --global core.autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
