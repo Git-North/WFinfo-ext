@@ -19,8 +19,8 @@ and reports the outcome. It is an "independent digital service" (see
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
   `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`), file reading, API endpoints.
 - `src/lib/scanner.ts` — one scan run at a time: spawn the configured command
-  with the per-run capture arguments, kill it at the deadline, report
-  status/exit code/output.
+  with the per-run capture arguments in its own process group, kill the group
+  at the deadline or on server shutdown, report status/exit code/output.
 - `src/lib/targets.ts` — what a scan can capture on this host: `wlr-randr`
   displays, `mmsg get all-clients` window frames (mango IPC), `wlrctl toplevel
   list` names as a fallback, and the choice → `--output`/`--region` mapping.
@@ -69,6 +69,14 @@ and reports the outcome. It is an "independent digital service" (see
   `409`, never queued — two runs would capture the screen twice and race on the
   scan record. A run past its deadline (180 s) is killed and reported as
   `timeout`.
+- Kill the process group, never only `sh`: the command runs detached (own
+  session and group, POSIX), and the deadline sends SIGKILL to the negative
+  pid. Children that survive keep the output pipes open, and `output()` then
+  waits until they end. dash (Debian/Ubuntu `/bin/sh`) forks even a single
+  command, and `nix run` always starts `dotnet`. The group is out of reach of
+  the terminal's Ctrl-C and hang-up, so `main.ts` stops the run on SIGHUP,
+  SIGINT, SIGTERM and `unload`. On Windows the command is not detached and
+  only the direct child is killed.
 - The Scan page offers the host's displays and windows, and the choice is
   resolved on the server: the form carries an output name (`display:DP-2`) or a
   client id (`window:7`), and `src/lib/targets.ts` turns it into `--output` or

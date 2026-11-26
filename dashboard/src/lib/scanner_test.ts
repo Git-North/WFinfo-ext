@@ -57,3 +57,99 @@ Deno.test("scanner kills a command that passes the deadline", async () => {
   );
   assertTrue(!scanner.busy, "a stopped run frees the scanner");
 });
+
+/** The pid a command wrote to `file`, polled until it appears. */
+async function readPid(file: string): Promise<number> {
+  for (let i = 0; i < 100; i++) {
+    const text = await Deno.readTextFile(file).catch(() => "");
+    if (text.trim() !== "") return Number(text.trim());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`no pid in ${file}`);
+}
+
+/**
+ * True when `pid` still runs after three seconds. A killed orphan stays a
+ * zombie (signal 0 still finds it) until init reaps it, which can take a
+ * moment; a zombie runs nothing and holds no pipes, so it counts as dead.
+ */
+async function alive(pid: number): Promise<boolean> {
+  for (let i = 0; i < 150; i++) {
+    try {
+      Deno.kill(pid, 0); // Signal 0 only checks that the pid exists.
+    } catch {
+      return false;
+    }
+    // Linux: field 3 of /proc/<pid>/stat is the state ("Z" = zombie).
+    const stat = await Deno.readTextFile(`/proc/${pid}/stat`).catch(() => "");
+    if (/^\d+ \(.*\) Z /.test(stat)) return false;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return true;
+}
+
+Deno.test({
+  name: "scanner kills the grandchildren of a command at the deadline",
+  // Process groups are POSIX; Windows kills the direct child only.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    // `sleep 5; echo done` is a list, so every shell (bash too) forks `sleep`
+    // as a grandchild that holds the output pipes. Killing `sh` alone would
+    // leave the run waiting the full 5 s.
+    const pidFile = await Deno.makeTempFile();
+    try {
+      const scanner = new Scanner({
+        command: `sleep 5 & echo $! > '${pidFile}'; wait; echo done`,
+        timeoutMs: 300,
+      });
+      const startedMs = Date.now();
+
+      const outcome = await scanner.run();
+
+      assertEquals(outcome.status, "timeout");
+      assertTrue(
+        Date.now() - startedMs < 3000,
+        "the run ended at the deadline, not when the grandchild exited",
+      );
+      assertTrue(!outcome.output.includes("done"), "the list never finished");
+      const sleepPid = await readPid(pidFile);
+      assertTrue(
+        !(await alive(sleepPid)),
+        "the grandchild died with the group",
+      );
+      assertTrue(!scanner.busy, "a stopped run frees the scanner");
+    } finally {
+      await Deno.remove(pidFile);
+    }
+  },
+});
+
+Deno.test({
+  name: "scanner stop kills the run in flight with its grandchildren",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const pidFile = await Deno.makeTempFile();
+    try {
+      const scanner = new Scanner({
+        command: `sleep 5 & echo $! > '${pidFile}'; wait; echo done`,
+      });
+      const running = scanner.run();
+      const sleepPid = await readPid(pidFile);
+      const startedMs = Date.now();
+
+      scanner.stop();
+      const outcome = await running;
+
+      assertTrue(Date.now() - startedMs < 3000, "stop ended the run at once");
+      assertTrue(outcome.status !== "ok", "a stopped run is not a success");
+      assertTrue(
+        !(await alive(sleepPid)),
+        "the grandchild died with the group",
+      );
+      assertTrue(!scanner.busy, "a stopped run frees the scanner");
+      scanner.stop(); // A stop with nothing in flight is a no-op.
+    } finally {
+      await Deno.remove(pidFile);
+    }
+  },
+});
