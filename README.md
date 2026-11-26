@@ -133,6 +133,12 @@ each push to `master`, on each pull request, and on manual start
 | Linux | `ubuntu-latest` | `nix flake check`, build `headless/`, `--selfcheck` |
 | Dashboard | `ubuntu-latest` | `deno fmt --check`, `deno check src`, `deno lint`, `deno test -A src` |
 | macOS | `macos-latest` (Apple Silicon) | build `headless/` (.NET 9), Swift packages under `headless/`, dashboard checks |
+| Windows (best effort) | `windows-latest` | build `WFInfo.sln` (Release), build `headless/`, dashboard checks |
+
+- Linux and macOS must pass. The Windows job does not block: a failure there
+  does not fail the workflow. Its job summary shows the result of each build.
+- Each job installs only the tools for its own OS. Nix runs only on Linux, and
+  Swift only on macOS.
 
 - `--selfcheck` downloads `eng.traineddata` from GitHub on the first run, so
   the Linux job needs network access.

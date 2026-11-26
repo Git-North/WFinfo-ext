@@ -135,3 +135,71 @@ jobs:
           deno check src
           deno lint
           deno test -A src
+
+  # Best effort: Linux and macOS are required, Windows is a bonus. A failure
+  # here does not fail the workflow (continue-on-error). Every build step runs
+  # even when an earlier one fails, and the last step names the ones that
+  # failed. Windows tooling stays in this job only: no Nix and no Swift here.
+  windows:
+    name: Windows (best effort)
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Check out with LF line endings, as on Linux and macOS, so that
+      # `deno fmt --check` sees the same files.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      # The Windows desktop app: net48 + WPF/WinForms, SDK-style project.
+      - name: Build WFInfo app (WFInfo.sln, Release)
+        id: app
+        continue-on-error: true
+        run: dotnet build WFInfo.sln -c Release
+
+      - name: Build headless runner
+        id: headless
+        continue-on-error: true
+        run: dotnet build headless/WFInfo.Headless.csproj
+
+      - name: Dashboard gates
+        id: dashboard
+        continue-on-error: true
+        working-directory: dashboard
+        run: |
+          deno fmt --check
+          deno check src
+          deno lint
+          deno test -A src
+
+      - name: Result
+        env:
+          APP: ${{ steps.app.outcome }}
+          HEADLESS: ${{ steps.headless.outcome }}
+          DASHBOARD: ${{ steps.dashboard.outcome }}
+        run: |
+          {
+            echo "### Windows (best effort)"
+            echo "| Build | Result |"
+            echo "| --- | --- |"
+            echo "| WFInfo.sln (Release) | $APP |"
+            echo "| headless/WFInfo.Headless.csproj | $HEADLESS |"
+            echo "| dashboard gates | $DASHBOARD |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "WFInfo.sln=$APP headless=$HEADLESS dashboard=$DASHBOARD"
+          [ "$APP" = success ] && [ "$HEADLESS" = success ] && [ "$DASHBOARD" = success ]

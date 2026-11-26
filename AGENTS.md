@@ -106,6 +106,11 @@ runners on push to `master`, on pull requests and on `workflow_dispatch`:
 - macOS job (Apple Silicon): headless build with the .NET 9 SDK, `swift build`
   for each `Package.swift` under `headless/` (skips if none) with
   `--force-resolved-versions` (commit `Package.resolved`), Deno gates.
+- Windows job (best effort, `continue-on-error`): `dotnet build WFInfo.sln -c
+  Release`, the headless build, Deno gates. It never blocks the workflow.
+- Build rule (user): every build MUST pass on Linux and macOS. Windows is
+  welcome but optional. Do not install a tool on an OS that does not need it
+  (no Nix outside Linux, no Swift outside macOS, no Windows tooling elsewhere).
 - Pin every third-party action to a full commit SHA with the tag in a comment.
   Keep `DENO_VERSION` equal to the Deno in `flake.lock`. Validate edits with
   `actionlint`.
