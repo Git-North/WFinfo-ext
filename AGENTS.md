@@ -49,8 +49,8 @@ and can start a reward-screen scan from its Scan page.
 - `tests/` — OCR/theme regression framework docs + scenario data. Child: `tests/AGENTS.md`.
 - `docs/` — GitHub Pages website (has CNAME/index.html; do not drop engineering
   docs into it), owned at root.
-- `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows) —
-  root-owned.
+- `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows),
+  `.sonar-config.json` — root-owned.
 
 ## Local Contracts
 
@@ -108,6 +108,11 @@ runners on push to `master`, on pull requests and on `workflow_dispatch`:
 - Pin every third-party action to a full commit SHA with the tag in a comment.
   Keep `DENO_VERSION` equal to the Deno in `flake.lock`. Validate edits with
   `actionlint`.
+- SonarQube (`.github/workflows/sonarqube.yml`): SonarScanner for .NET around
+  the headless build, with `sonar.scanner.scanAll` for TypeScript and other
+  files. Secretless SonarQube Cloud login (OIDC). PRs wait for the quality
+  gate. Settings go in `/d:` arguments; do NOT add `sonar-project.properties`
+  (the .NET scanner refuses it). `.sonar-config.json` is for the `sonar` CLI.
 
 The Windows build cannot be verified on Linux; keep shared-code edits
 Windows-equivalent (Path.Combine semantics) and compile-check them here.

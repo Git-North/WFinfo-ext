@@ -1,0 +1,193 @@
+name: SonarQube
+
+# Static analysis with SonarQube: C# through SonarScanner for .NET around the
+# headless build, plus the other languages in the tree (dashboard TypeScript,
+# CSS, JS, JSON, YAML) through the scanner's multi-language mode
+# (sonar.scanner.scanAll, default true since scanner v8).
+#
+# - Pushes to master update the branch analysis.
+# - Pull requests are analyzed as pull requests. The job waits for the quality
+#   gate and fails when the gate fails, so the PR shows a red
+#   "SonarQube / analysis" check.
+# - C# is analyzed only where it is compiled. The headless build compiles the
+#   shared core (Ocr.cs, Data.cs, LanguageProcessing, Services, Settings,
+#   Tests) and headless/. The Windows-only WPF/WinForms sources are not built
+#   on Linux, so they are not analyzed.
+# - Do not add sonar-project.properties: SonarScanner for .NET refuses to run
+#   with one. Settings go in the /d: arguments below.
+#
+# Authentication
+# - SonarQube Cloud (the default) uses secretless analysis: the job gets a
+#   GitHub OIDC token and SonarSource/sonarqube-auth-action exchanges it for a
+#   project-scoped token that expires after 30 minutes. No SONAR_TOKEN secret
+#   is stored. Setup, once: the repository is bound to the SonarQube Cloud
+#   project (Git-North_WFinfo-ext in organization son-north), Automatic
+#   Analysis is off for that project, and the organization has "Enable
+#   secretless analysis for GitHub Actions" on. The organization and project
+#   key come from that binding.
+# - A self-hosted SonarQube Server has no OIDC exchange. Set the repository
+#   variable SONAR_HOST_URL to its URL and the repository secret SONAR_TOKEN to
+#   a token with Execute Analysis permission. SONAR_PROJECT_KEY (variable,
+#   optional) overrides the project key (Git-North_WFinfo-ext).
+# - When the analysis cannot run (a PR from another repository in Cloud mode:
+#   GitHub gives it no OIDC token; or Server mode without SONAR_TOKEN) the job
+#   fails instead of passing, so the check never turns green without a
+#   quality-gate result.
+#
+# Every third-party action is pinned to a full commit SHA; the comment names
+# the release tag. SCANNER_VERSION pins the dotnet-sonarscanner NuGet tool.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: sonarqube-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  # For the GitHub OIDC token that secretless analysis exchanges for a
+  # SonarQube Cloud token.
+  id-token: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  SCANNER_VERSION: "12.1.0"
+
+jobs:
+  # Chooses the analysis runner. runs-on cannot read repository files, so this
+  # job looks for the macOS port's Swift package first: with a Package.swift
+  # under headless/, the analysis runs on macos-15 (the port's build needs
+  # macOS); otherwise on ubuntu-latest.
+  runner:
+    name: Choose runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      label: ${{ steps.pick.outputs.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: headless
+      - name: Pick runner
+        id: pick
+        run: |
+          if find headless -name Package.swift -not -path '*/.build/*' | grep -q .; then
+            label=macos-15
+          else
+            label=ubuntu-latest
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "Analysis runner: $label"
+
+  analysis:
+    name: analysis
+    needs: runner
+    runs-on: ${{ needs.runner.outputs.label }}
+    timeout-minutes: 30
+    steps:
+      - name: Choose SonarQube Cloud or Server
+        id: mode
+        env:
+          SERVER_URL: ${{ vars.SONAR_HOST_URL }}
+          HAS_SERVER_TOKEN: ${{ secrets.SONAR_TOKEN != '' }}
+          # Not head.repo.fork: that is true for every PR here, because this
+          # repository is itself a fork.
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          run=true
+          if [ -z "$SERVER_URL" ]; then
+            mode=cloud
+            if [ "$FORK_PR" = "true" ]; then
+              echo "::error::Pull requests from other repositories get no OIDC token, so secretless SonarQube Cloud analysis cannot run. Review the PR manually."
+              run=false
+            fi
+          else
+            mode=server
+            if [ "$HAS_SERVER_TOKEN" != "true" ]; then
+              echo "::error::SONAR_HOST_URL is set but the SONAR_TOKEN secret is not available (not set, or a pull request from another repository), so the analysis cannot run."
+              run=false
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "SonarQube $mode, analysis runs: $run"
+          # Fail rather than pass without a quality-gate result.
+          [ "$run" = "true" ] || exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history, so new-code detection and blame work.
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "9.0.x"
+
+      # The scanner downloads its own JRE and Node.js from SonarQube.
+      - name: Install SonarScanner for .NET
+        run: |
+          dotnet tool install --global dotnet-sonarscanner --version "$SCANNER_VERSION"
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      # Right before the scan, because the token lasts 30 minutes.
+      - name: SonarQube Cloud authentication (OIDC)
+        if: steps.mode.outputs.mode == 'cloud'
+        id: auth
+        uses: SonarSource/sonarqube-auth-action@b372e2c2930aadfcc4f4399446da1e12772709ad # v1.2
+
+      # begin -> build -> end, all from the repository root: multi-language
+      # analysis covers files under sonar.projectBaseDir that are outside the
+      # MSBuild project (dashboard/, .github/, tests/).
+      - name: Scan (begin, build, end)
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          CLOUD_TOKEN: ${{ steps.auth.outputs.sonar-token }}
+          CLOUD_ORG: ${{ steps.auth.outputs.organization }}
+          CLOUD_KEY: ${{ steps.auth.outputs.project-key }}
+          CLOUD_REGION: ${{ steps.auth.outputs.sonar-region }}
+          SERVER_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SERVER_URL: ${{ vars.SONAR_HOST_URL }}
+          SERVER_KEY: ${{ vars.SONAR_PROJECT_KEY || 'Git-North_WFinfo-ext' }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "cloud" ]; then
+            token=$CLOUD_TOKEN
+            args=(/k:"$CLOUD_KEY" /o:"$CLOUD_ORG")
+            if [ -n "$CLOUD_REGION" ]; then
+              args+=(/d:sonar.region="$CLOUD_REGION")
+            else
+              args+=(/d:sonar.host.url=https://sonarcloud.io)
+            fi
+          else
+            token=$SERVER_TOKEN
+            args=(/k:"$SERVER_KEY" /d:sonar.host.url="$SERVER_URL")
+          fi
+
+          # Vendored, binary and generated content.
+          exclusions='**/bin/**,**/obj/**,**/.build/**,**/tessdata/**'
+          exclusions+=',WFInfo/Resources/**,WFInfo/lib/**,docs/assets/**'
+          exclusions+=',**/*.min.js,**/*.min.css,.opencode/**'
+          args+=(
+            /d:sonar.projectBaseDir="$GITHUB_WORKSPACE"
+            /d:sonar.scanner.scanAll=true
+            /d:sonar.exclusions="$exclusions"
+            /d:sonar.test.inclusions='dashboard/src/**/*_test.ts,dashboard/src/lib/testutil.ts'
+          )
+          # Pull requests wait for the quality gate; `end` fails if it fails.
+          if [ "$IS_PR" = "true" ]; then
+            args+=(/d:sonar.qualitygate.wait=true /d:sonar.qualitygate.timeout=600)
+          fi
+
+          dotnet-sonarscanner begin "${args[@]}" /d:sonar.token="$token"
+          dotnet build headless/WFInfo.Headless.csproj --no-incremental
+          dotnet-sonarscanner end /d:sonar.token="$token"

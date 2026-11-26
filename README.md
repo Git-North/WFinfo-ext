@@ -145,6 +145,29 @@ each push to `master`, on each pull request, and on manual start
 - On a fork, GitHub disables Actions until the owner enables them (repository
   Actions tab).
 
+### SonarQube
+
+`.github/workflows/sonarqube.yml` sends the code to SonarQube Cloud (project
+`Git-North_WFinfo-ext`, organization `son-north`). It runs on the same events.
+
+- It uses SonarScanner for .NET around `dotnet build
+  headless/WFInfo.Headless.csproj`. Multi-language mode (`sonar.scanner.scanAll`)
+  also analyzes the dashboard TypeScript and the other text files.
+- C# is analyzed only where the headless build compiles it: the shared core and
+  `headless/`. The Windows-only UI sources are not analyzed.
+- Login is secretless (GitHub OIDC). No `SONAR_TOKEN` secret is necessary for
+  SonarQube Cloud. Automatic Analysis must stay off for the project.
+- On a pull request, the job waits for the quality gate. If the gate fails, the
+  check fails.
+- A pull request from another repository gets no OIDC token, so the job fails
+  with an error.
+- For a self-hosted SonarQube Server, set the `SONAR_HOST_URL` variable and the
+  `SONAR_TOKEN` secret.
+- The job runs on `ubuntu-latest`. If a `Package.swift` is under `headless/`, it
+  runs on `macos-15`.
+- Do not add `sonar-project.properties`, because SonarScanner for .NET does not
+  run with it. `.sonar-config.json` links the `sonar` CLI to the project.
+
 ## Environment
 
 - `WFINFO_DATA_DIR` — application-data root. The default is the XDG config
