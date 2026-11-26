@@ -104,7 +104,8 @@ runners on push to `master`, on pull requests and on `workflow_dispatch`:
   network for tessdata).
 - Dashboard job: the four Deno gates above.
 - macOS job (Apple Silicon): headless build with the .NET 9 SDK, `swift build`
-  for each `Package.swift` under `headless/` (skips if none), Deno gates.
+  for each `Package.swift` under `headless/` (skips if none) with
+  `--force-resolved-versions` (commit `Package.resolved`), Deno gates.
 - Pin every third-party action to a full commit SHA with the tag in a comment.
   Keep `DENO_VERSION` equal to the Deno in `flake.lock`. Validate edits with
   `actionlint`.

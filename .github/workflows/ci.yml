@@ -110,6 +110,9 @@ jobs:
       # separately and adds a Swift package under headless/. This step builds
       # every Package.swift it finds there. With no Package.swift, it skips.
       # The port only has to add its package; this workflow needs no change.
+      # --force-resolved-versions builds only the versions locked in the
+      # package's Package.resolved (commit it with the package) and fails if
+      # the file is missing or out of date, instead of resolving new versions.
       - name: Build Swift package(s) under headless/ (macOS port, if present)
         run: |
           set -euo pipefail
@@ -118,7 +121,7 @@ jobs:
             dir=$(dirname "$manifest")
             found=1
             echo "::group::swift build --package-path $dir"
-            swift build --package-path "$dir" -c release
+            swift build --package-path "$dir" -c release --force-resolved-versions
             echo "::endgroup::"
           done < <(find headless -name Package.swift -not -path '*/.build/*' | sort)
           if [ "$found" -eq 0 ]; then

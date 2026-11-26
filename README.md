@@ -137,7 +137,9 @@ each push to `master`, on each pull request, and on manual start
 - `--selfcheck` downloads `eng.traineddata` from GitHub on the first run, so
   the Linux job needs network access.
 - The macOS job builds each `Package.swift` under `headless/`. If there is no
-  `Package.swift`, the step skips.
+  `Package.swift`, the step skips. The build uses only the versions in
+  `Package.resolved` (`--force-resolved-versions`), so commit that file with a
+  package that has dependencies.
 - Each third-party action is pinned to a full commit SHA. A comment gives the
   release tag.
 - The CI Deno version must be equal to the Deno version in `flake.lock`. If you
