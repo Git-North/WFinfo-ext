@@ -49,7 +49,8 @@ and can start a reward-screen scan from its Scan page.
 - `tests/` — OCR/theme regression framework docs + scenario data. Child: `tests/AGENTS.md`.
 - `docs/` — GitHub Pages website (has CNAME/index.html; do not drop engineering
   docs into it), owned at root.
-- `flake.nix`, `.gitignore`, README files — root-owned.
+- `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows) —
+  root-owned.
 
 ## Local Contracts
 
@@ -95,6 +96,18 @@ Dashboard (Deno, also inside `nix develop`):
 - `cd dashboard && deno task dev` — dashboard on http://localhost:8000.
 - `nix run .#dev-all` — dashboard live reload plus the headless backend rebuilt
   and re-run (reward-screen scan) on every backend edit. Ctrl-C stops both.
+
+CI (`.github/workflows/ci.yml`, root-owned) runs these gates on GitHub-hosted
+runners on push to `master`, on pull requests and on `workflow_dispatch`:
+
+- Linux job: `nix flake check`, the headless build, `--selfcheck` (needs
+  network for tessdata).
+- Dashboard job: the four Deno gates above.
+- macOS job (Apple Silicon): headless build with the .NET 9 SDK, `swift build`
+  for each `Package.swift` under `headless/` (skips if none), Deno gates.
+- Pin every third-party action to a full commit SHA with the tag in a comment.
+  Keep `DENO_VERSION` equal to the Deno in `flake.lock`. Validate edits with
+  `actionlint`.
 
 The Windows build cannot be verified on Linux; keep shared-code edits
 Windows-equivalent (Path.Combine semantics) and compile-check them here.

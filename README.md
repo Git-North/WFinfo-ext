@@ -122,6 +122,29 @@ nix flake check              # format, typecheck, and unit tests in a sandbox
 nix build .#tesseract-native # native-library output, for use in CI
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the checks on GitHub-hosted runners. It runs on
+each push to `master`, on each pull request, and on manual start
+(`workflow_dispatch`). A new push cancels the older run of the same branch.
+
+| Job | Runner | Steps |
+| --- | --- | --- |
+| Linux | `ubuntu-latest` | `nix flake check`, build `headless/`, `--selfcheck` |
+| Dashboard | `ubuntu-latest` | `deno fmt --check`, `deno check src`, `deno lint`, `deno test -A src` |
+| macOS | `macos-latest` (Apple Silicon) | build `headless/` (.NET 9), Swift packages under `headless/`, dashboard checks |
+
+- `--selfcheck` downloads `eng.traineddata` from GitHub on the first run, so
+  the Linux job needs network access.
+- The macOS job builds each `Package.swift` under `headless/`. If there is no
+  `Package.swift`, the step skips.
+- Each third-party action is pinned to a full commit SHA. A comment gives the
+  release tag.
+- The CI Deno version must be equal to the Deno version in `flake.lock`. If you
+  update `flake.lock`, update `DENO_VERSION` in the workflow.
+- On a fork, GitHub disables Actions until the owner enables them (repository
+  Actions tab).
+
 ## Environment
 
 - `WFINFO_DATA_DIR` — application-data root. The default is the XDG config
