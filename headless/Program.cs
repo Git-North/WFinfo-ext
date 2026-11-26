@@ -95,12 +95,6 @@ namespace WFInfo
                 return await RunSelfCheck(clean.Skip(1).ToArray()).ConfigureAwait(false);
             }
 
-            // Offline check of the macOS reward layout (no capture, no images).
-            if (first.Equals("--layout-test", StringComparison.OrdinalIgnoreCase))
-            {
-                return RewardLayoutTest.Run();
-            }
-
             if (first.Equals("--scan", StringComparison.OrdinalIgnoreCase))
             {
                 return await RunScan(clean.Skip(1).ToArray()).ConfigureAwait(false);
