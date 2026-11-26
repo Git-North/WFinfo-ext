@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using WFInfo.MacOS;
 using WFInfo.Services.WindowInfo;
 using WFInfo.Settings;
 
@@ -35,14 +36,21 @@ namespace WFInfo.Scan
         private readonly MarketSheet _sheet;
         private readonly PriceCache _cache;
         private readonly ApplicationSettings _settings;
+        private readonly VisionRewardScan _visionLayout;
 
-        public ScanRunner(ScanOptions options, IWindowInfoService window, MarketSheet sheet, PriceCache cache, ApplicationSettings settings)
+        /// <param name="visionLayout">
+        /// macOS Vision layout scan (no System.Drawing); null runs WFInfo's own
+        /// extraction with Tesseract (Linux, or `--ocr tesseract`).
+        /// </param>
+        public ScanRunner(ScanOptions options, IWindowInfoService window, MarketSheet sheet, PriceCache cache, ApplicationSettings settings,
+            VisionRewardScan visionLayout)
         {
             _options = options;
             _window = window;
             _sheet = sheet;
             _cache = cache;
             _settings = settings;
+            _visionLayout = visionLayout;
         }
 
         /// <summary>Runs the scan; returns 0 when a record was produced, 1 when capture/OCR failed.</summary>
@@ -54,12 +62,14 @@ namespace WFInfo.Scan
             {
                 Version = 1,
                 StartedAt = ScanPaths.Iso(startedUtc),
-                CaptureSource = _options.File != null ? "file" : "grim",
+                CaptureSource = _options.File != null ? "file" : ScreenCapture.SourceName,
+                OcrEngine = _visionLayout != null ? "vision-layout" : "tesseract",
             };
 
             string lastError = null;
             Bitmap acceptedImage = null;
             string acceptedPath = null;
+            byte[] acceptedPng = null;
             string acceptedTarget = null;
             bool acceptedIsTemporary = false;
             var acceptedParts = new List<string>();
@@ -76,6 +86,8 @@ namespace WFInfo.Scan
                 return 1;
             }
 
+            if (_visionLayout != null) return await RunVisionLayoutAsync(result, startedUtc, watch).ConfigureAwait(false);
+
             // The game announces a reward screen before the panel is on screen
             // (the EE.log watcher keys on the announcement), so a triggered scan
             // re-captures until a part is recognised or the wait budget is spent.
@@ -84,7 +96,18 @@ namespace WFInfo.Scan
             {
                 foreach (CaptureCandidate candidate in BuildCandidates())
                 {
-                    if (candidate.Kind == "grim")
+                    byte[] png = null;
+                    if (candidate.Kind == "memory")
+                    {
+                        // macOS: the PNG comes back through the helper's stdout.
+                        png = ScreenCapture.CaptureMacPng(candidate.Output, candidate.Window, out string captureError);
+                        if (png == null)
+                        {
+                            lastError = captureError;
+                            continue;
+                        }
+                    }
+                    else if (candidate.Kind == "capture")
                     {
                         if (!ScreenCapture.Capture(candidate.Output, candidate.Region, candidate.Path, out string captureError))
                         {
@@ -93,11 +116,14 @@ namespace WFInfo.Scan
                         }
                     }
 
-                    Bitmap bitmap = TryLoad(candidate.Path, out string loadError);
+                    string loadError;
+                    Bitmap bitmap = png != null
+                        ? TryLoadPng(png, candidate.Label, out loadError)
+                        : TryLoad(candidate.Path, out loadError);
                     if (bitmap == null)
                     {
                         lastError = loadError;
-                        if (candidate.Kind == "grim") TryDelete(candidate.Path);
+                        if (candidate.Kind == "capture") TryDelete(candidate.Path);
                         continue;
                     }
 
@@ -109,7 +135,8 @@ namespace WFInfo.Scan
 
                         acceptedImage = bitmap;
                         acceptedPath = candidate.Path;
-                        acceptedIsTemporary = candidate.Kind == "grim";
+                        acceptedPng = png;
+                        acceptedIsTemporary = candidate.Kind == "capture";
                         acceptedTarget = candidate.Kind == "file"
                             ? candidate.Path
                             : candidate.Label;
@@ -120,7 +147,7 @@ namespace WFInfo.Scan
                     else
                     {
                         bitmap.Dispose();
-                        if (candidate.Kind == "grim") TryDelete(candidate.Path);
+                        if (candidate.Kind == "capture") TryDelete(candidate.Path);
                     }
 
                     if (acceptedParts.Count >= PartsGoodEnough) break;
@@ -145,26 +172,115 @@ namespace WFInfo.Scan
                 result.Theme = acceptedTheme;
                 result.ThemeWeight = acceptedThemeWeight;
 
-                result.ScreenshotPath = StoreScreenshot(acceptedPath) ?? acceptedPath;
-                result.Choices = await PriceChoicesAsync(acceptedParts).ConfigureAwait(false);
-                result.PriceCache = new PriceCacheStats
-                {
-                    Hits = _cache.Hits,
-                    Fetched = _cache.Fetched,
-                    Failed = _cache.Failed,
-                    Entries = _cache.Entries,
-                };
-                _cache.Save();
-                SetRecommendations(result);
+                result.ScreenshotPath = acceptedPng != null
+                    ? StorePng(acceptedPng)
+                    : StoreScreenshot(acceptedPath) ?? acceptedPath;
+                await PriceAsync(result, acceptedParts).ConfigureAwait(false);
 
                 acceptedImage.Dispose();
                 if (acceptedIsTemporary) TryDelete(acceptedPath);
             }
 
+            CleanTempDirectory();
+            return Complete(result, watch);
+        }
+
+        /// <summary>
+        /// macOS scan without System.Drawing: each candidate (a file, a window,
+        /// or every display, main first) is one `wfinfo-mac rewards` call that
+        /// captures, crops the name rows and reads them with Vision; the layout
+        /// and WFInfo's name matching run on text and boxes only. The helper
+        /// writes each capture to the scans dir; the accepted one becomes
+        /// scans/last.png, the others are deleted. No temporary files.
+        /// </summary>
+        private async Task<int> RunVisionLayoutAsync(ScanResult result, DateTime startedUtc, Stopwatch watch)
+        {
+            string lastError = null;
+            VisionRewardScan.Attempt accepted = null;
+            string acceptedTarget = null;
+            string acceptedFile = null;
+
+            DateTime attemptDeadline = startedUtc.AddSeconds(_options.WaitSeconds);
+            while (true)
+            {
+                int index = 0;
+                foreach (CaptureCandidate candidate in BuildCandidates())
+                {
+                    string file = candidate.Kind == "file" ? candidate.Path : null;
+                    string save = file == null
+                        ? Path.Combine(ScanPaths.ScansDir, "capture-" + index++ + ".png")
+                        : null;
+
+                    VisionRewardScan.Attempt attempt = _visionLayout.Run(candidate.Output, candidate.Window, file, save);
+                    if (attempt.Error != null)
+                    {
+                        lastError = attempt.Error;
+                        TryDelete(save);
+                        continue;
+                    }
+
+                    if (accepted == null || attempt.Parts.Count > accepted.Parts.Count)
+                    {
+                        if (accepted?.SavedPng != null) TryDelete(accepted.SavedPng);
+                        accepted = attempt;
+                        acceptedTarget = file ?? candidate.Label;
+                        acceptedFile = file;
+                    }
+                    else
+                    {
+                        TryDelete(attempt.SavedPng);
+                    }
+
+                    if (accepted.Parts.Count >= PartsGoodEnough) break;
+                }
+
+                if (accepted != null && accepted.Parts.Count > 0) break;
+                if (DateTime.UtcNow >= attemptDeadline) break;
+
+                await Task.Delay(CaptureRetryIntervalMs).ConfigureAwait(false);
+            }
+
+            if (accepted == null)
+            {
+                result.Error = lastError ?? "no screenshot could be captured or read";
+            }
+            else
+            {
+                result.CaptureTarget = acceptedTarget;
+                result.ScreenshotWidth = accepted.Width;
+                result.ScreenshotHeight = accepted.Height;
+                result.UiScaling = accepted.UiScale;
+                result.Theme = null;
+                result.ThemeWeight = 0;
+                result.ScreenshotPath = acceptedFile != null
+                    ? StoreScreenshot(acceptedFile) ?? acceptedFile
+                    : MoveToScreenshot(accepted.SavedPng);
+                await PriceAsync(result, accepted.Parts).ConfigureAwait(false);
+            }
+
+            return Complete(result, watch);
+        }
+
+        /// <summary>Prices the recognised parts, flags the best choice and saves the price cache.</summary>
+        private async Task PriceAsync(ScanResult result, List<string> parts)
+        {
+            result.Choices = await PriceChoicesAsync(parts).ConfigureAwait(false);
+            result.PriceCache = new PriceCacheStats
+            {
+                Hits = _cache.Hits,
+                Fetched = _cache.Fetched,
+                Failed = _cache.Failed,
+                Entries = _cache.Entries,
+            };
+            _cache.Save();
+            SetRecommendations(result);
+        }
+
+        /// <summary>Finishes the record: timing, persist, console summary, notification.</summary>
+        private int Complete(ScanResult result, Stopwatch watch)
+        {
             result.FinishedAt = ScanPaths.Iso(DateTime.UtcNow);
             result.DurationMs = watch.ElapsedMilliseconds;
-
-            CleanTempDirectory();
 
             Persist(result);
             Print(result);
@@ -175,13 +291,31 @@ namespace WFInfo.Scan
             return result.Error == null ? 0 : 1;
         }
 
+        /// <summary>The helper's capture becomes scans/last.png (same directory, so a rename).</summary>
+        private static string MoveToScreenshot(string savedPng)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(savedPng) || !File.Exists(savedPng)) return null;
+                File.Move(savedPng, ScanPaths.ScreenshotPng, overwrite: true);
+                return ScanPaths.ScreenshotPng;
+            }
+            catch (Exception ex)
+            {
+                Main.AddLog("Failed to store the scan screenshot: " + ex.Message);
+                return null;
+            }
+        }
+
         /// <summary>
         /// Screens to try: the given file, a chosen region, a chosen output, or
         /// every output before the joined (all outputs) capture. The joined
         /// image puts the reward strip off-center whenever monitors sit side by
         /// side, so it is only a fallback — and the last resort when wlr-randr
         /// is unavailable. A file or a region is a single candidate: the caller
-        /// asked for exactly that image.
+        /// asked for exactly that image. On macOS a window id or a display id is
+        /// a single candidate too; otherwise every display is tried, main display
+        /// first (ScreenCaptureKit has no joined image).
         /// </summary>
         private List<CaptureCandidate> BuildCandidates()
         {
@@ -190,17 +324,44 @@ namespace WFInfo.Scan
             if (_options.File != null)
             {
                 string path = Path.GetFullPath(_options.File);
-                candidates.Add(new CaptureCandidate("file", null, null, path, path));
+                candidates.Add(new CaptureCandidate("file", null, null, null, path, path));
+                return candidates;
+            }
+
+            // macOS captures stay in memory (`wfinfo-mac capture -`): no temp folder.
+            if (OperatingSystem.IsMacOS())
+            {
+                if (!string.IsNullOrEmpty(_options.Window))
+                {
+                    candidates.Add(new CaptureCandidate(
+                        "memory", null, null, _options.Window, null,
+                        "window " + _options.Window));
+                    return candidates;
+                }
+
+                List<string> displays = string.IsNullOrEmpty(_options.Output)
+                    ? ScreenCapture.ListOutputs()
+                    : new List<string> { _options.Output };
+                if (displays.Count == 0) displays.Add(null);
+                foreach (string display in displays)
+                {
+                    candidates.Add(new CaptureCandidate(
+                        "memory", display, null, null, null,
+                        "display " + (display ?? "main")));
+                }
                 return candidates;
             }
 
             string directory = Path.Combine(Path.GetTempPath(), "wfinfo-scan-" + Environment.ProcessId);
             Directory.CreateDirectory(directory);
 
+            if (!string.IsNullOrEmpty(_options.Window))
+                throw new ArgumentException("--window is a macOS window id; on Linux use --region \"X,Y WxH\"");
+
             if (!string.IsNullOrEmpty(_options.Region))
             {
                 candidates.Add(new CaptureCandidate(
-                    "grim", null, _options.Region,
+                    "capture", null, _options.Region, null,
                     Path.Combine(directory, "region-" + SafeName(_options.Region) + ".png"),
                     _options.Region));
                 return candidates;
@@ -209,7 +370,7 @@ namespace WFInfo.Scan
             if (!string.IsNullOrEmpty(_options.Output))
             {
                 candidates.Add(new CaptureCandidate(
-                    "grim", _options.Output, null,
+                    "capture", _options.Output, null, null,
                     Path.Combine(directory, SafeName(_options.Output) + ".png"),
                     _options.Output));
                 return candidates;
@@ -218,13 +379,13 @@ namespace WFInfo.Scan
             foreach (string output in ScreenCapture.ListOutputs())
             {
                 candidates.Add(new CaptureCandidate(
-                    "grim", output, null,
+                    "capture", output, null, null,
                     Path.Combine(directory, SafeName(output) + ".png"),
                     output));
             }
 
             candidates.Add(new CaptureCandidate(
-                "grim", null, null, Path.Combine(directory, "all-outputs.png"), "all"));
+                "capture", null, null, null, Path.Combine(directory, "all-outputs.png"), "all"));
             return candidates;
         }
 
@@ -400,6 +561,21 @@ namespace WFInfo.Scan
             }
         }
 
+        /// <summary>Writes an in-memory capture as the dashboard's scan screenshot.</summary>
+        private static string StorePng(byte[] png)
+        {
+            try
+            {
+                File.WriteAllBytes(ScanPaths.ScreenshotPng, png);
+                return ScanPaths.ScreenshotPng;
+            }
+            catch (Exception ex)
+            {
+                Main.AddLog("Failed to store the scan screenshot: " + ex.Message);
+                return null;
+            }
+        }
+
         /// <summary>Writes latest.json plus one timestamped record, newest 60 kept.</summary>
         private static void Persist(ScanResult result)
         {
@@ -521,6 +697,28 @@ namespace WFInfo.Scan
             }
         }
 
+        /// <summary>
+        /// Decodes a PNG held in memory. GDI+ needs the source stream for the
+        /// bitmap's lifetime, so the image is copied into a stand-alone bitmap.
+        /// </summary>
+        private static Bitmap TryLoadPng(byte[] png, string label, out string error)
+        {
+            try
+            {
+                using (var stream = new MemoryStream(png))
+                using (var decoded = new Bitmap(stream))
+                {
+                    error = null;
+                    return new Bitmap(decoded);
+                }
+            }
+            catch (Exception ex)
+            {
+                error = $"cannot read the capture of {label}: {ex.Message}";
+                return null;
+            }
+        }
+
         private static string FormatPlat(double plat) =>
             plat.ToString("0.#", CultureInfo.InvariantCulture);
 
@@ -555,20 +753,24 @@ namespace WFInfo.Scan
 
         private readonly struct CaptureCandidate
         {
-            public CaptureCandidate(string kind, string output, string region, string path, string label)
+            public CaptureCandidate(string kind, string output, string region, string window, string path, string label)
             {
                 Kind = kind;
                 Output = output;
                 Region = region;
+                Window = window;
                 Path = path;
                 Label = label;
             }
 
-            /// <summary>"grim" (capture now) or "file" (already on disk).</summary>
+            /// <summary>"capture" (grim to a temp file), "memory" (macOS, PNG through a pipe) or "file" (already on disk).</summary>
             public string Kind { get; }
 
-            /// <summary>grim -o output name; null means the whole layout.</summary>
+            /// <summary>grim -o output name, or a macOS display id; null means the whole layout (main display on macOS).</summary>
             public string Output { get; }
+
+            /// <summary>macOS window id (CGWindowID); null means a display capture.</summary>
+            public string Window { get; }
 
             /// <summary>grim -g region ("X,Y WxH"); null means an output capture.</summary>
             public string Region { get; }

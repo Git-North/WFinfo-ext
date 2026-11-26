@@ -31,9 +31,9 @@ Windows release is `.NET Framework 4.8` + WPF/WinForms and is Windows-only.
 Since 2026 the repo also carries a **Linux-native headless core**: the
 platform-neutral OCR/theme/market-data/test code (linked, not copied) builds and
 runs as a .NET 9 console runner via the Nix flake in `flake.nix`. The same
-runner also builds natively on macOS (Homebrew .NET, no Nix), with a Swift
-helper for Apple Vision and ScreenCaptureKit (`headless/macos/`); the macOS
-port changes no shared `WFInfo/` file.
+runner also builds natively on macOS (Homebrew .NET, no Nix): there Apple Vision
+reads the text and ScreenCaptureKit captures the screen (`headless/macos/`);
+the macOS scan loads no libgdiplus and changes no shared `WFInfo/` file.
 Windows UI and Win32 surfaces are NOT portable and stay Windows-only.
 
 The repo also carries `dashboard/`: a Deno + GOV.UK Frontend web dashboard

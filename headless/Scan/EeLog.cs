@@ -6,8 +6,8 @@ using System.Text.RegularExpressions;
 namespace WFInfo.Scan
 {
     /// <summary>
-    /// Warframe's EE.log: where it lives on Linux, and which line means "the
-    /// game just showed a reward screen".
+    /// Warframe's EE.log: where it lives on Linux and macOS, and which line
+    /// means "the game just showed a reward screen".
     ///
     /// The Windows app listens to the process debug output (DBWIN shared
     /// memory) and watches for the same messages. On Linux the game runs under
@@ -62,13 +62,93 @@ namespace WFInfo.Scan
             string fromEnv = Environment.GetEnvironmentVariable("WFINFO_EE_LOG");
             if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
 
+            // Several prefixes can hold a log (Steam and a CrossOver bottle on a
+            // Mac, or two Steam libraries); the game writes only the one it runs
+            // in, so the newest log wins.
+            string newest = null;
+            DateTime newestWrite = DateTime.MinValue;
+            foreach (string candidate in ExistingLogs())
+            {
+                DateTime written = File.GetLastWriteTimeUtc(candidate);
+                if (newest == null || written > newestWrite)
+                {
+                    newest = candidate;
+                    newestWrite = written;
+                }
+            }
+            return newest;
+        }
+
+        private static IEnumerable<string> ExistingLogs()
+        {
             foreach (string root in SteamRoots())
             {
                 string found = FindInSteamRoot(root);
-                if (found != null) return found;
+                if (found != null) yield return found;
             }
 
-            return null;
+            foreach (string bottle in CrossOverBottles())
+            {
+                string candidate = Path.Combine(bottle, CrossOverRelative);
+                if (File.Exists(candidate)) yield return candidate;
+            }
+        }
+
+        /// <summary>Path inside a CrossOver bottle (macOS), relative to the bottle.</summary>
+        private const string CrossOverRelative = "drive_c/users/crossover/AppData/Local/Warframe/EE.log";
+
+        /// <summary>CrossOver bottles on macOS (each one is a Wine prefix).</summary>
+        private static IEnumerable<string> CrossOverBottles()
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string bottles = Path.Combine(home, "Library", "Application Support", "CrossOver", "Bottles");
+            if (!Directory.Exists(bottles)) return Array.Empty<string>();
+            try
+            {
+                return Directory.GetDirectories(bottles);
+            }
+            catch (IOException)
+            {
+                return Array.Empty<string>();
+            }
+        }
+
+        /// <summary>
+        /// Warframe's UI scale from EE.cfg, which sits next to EE.log. Same rule
+        /// as WFInfo's OCR.ReadUiScaleFromConfig: the line
+        /// <c>Flash.FlashDrawScale=VALUE</c>, rounded to 5 % steps and clamped to
+        /// 0.5–1.25; a config without the line means 1.0. Returns null when no
+        /// EE.cfg is found or the value does not parse (the caller then treats
+        /// the scale as unknown).
+        /// </summary>
+        public static double? ReadUiScale(string explicitLogPath)
+        {
+            string log = Resolve(explicitLogPath);
+            if (log == null) return null;
+            string cfg = Path.Combine(Path.GetDirectoryName(log) ?? string.Empty, "EE.cfg");
+            try
+            {
+                if (!File.Exists(cfg)) return null;
+                foreach (string line in File.ReadLines(cfg))
+                {
+                    if (!line.StartsWith("Flash.FlashDrawScale=", StringComparison.OrdinalIgnoreCase)) continue;
+                    string value = line.Substring("Flash.FlashDrawScale=".Length).Trim();
+                    if (!double.TryParse(value, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out double raw))
+                        return null;
+                    int percent = (int)Math.Round(raw * 100.0 / 5.0) * 5;
+                    return Math.Max(0.5, Math.Min(1.25, percent / 100.0));
+                }
+                return 1.0;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
         }
 
         /// <summary>Candidate hints for a log that does not exist yet (for error messages).</summary>
@@ -106,6 +186,8 @@ namespace WFInfo.Scan
             Add(Path.Combine(home, ".steam", "root"));
             Add(Path.Combine(home, ".local", "share", "Steam"));
             Add(Path.Combine(home, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"));
+            // macOS Steam (games run through its compatibility layer, prefix under compatdata).
+            Add(Path.Combine(home, "Library", "Application Support", "Steam"));
 
             // A custom install pointed at by the environment.
             Add(Environment.GetEnvironmentVariable("STEAM_ROOT"));
@@ -155,7 +237,9 @@ namespace WFInfo.Scan
     }
 
     /// <summary>
-    /// Poll-based tail of a text file.
+    /// Pull-based tail of a text file. The caller reads it on each poll or file
+    /// event (see ScanWatcher); a read with nothing new costs one open and one
+    /// small probe, so extra wake-ups are harmless.
     ///
     /// The log is replaced rather than appended to when the game starts a new
     /// session, and a replacement can be longer than what was already read — so

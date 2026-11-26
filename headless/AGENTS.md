@@ -3,8 +3,8 @@
 ## Purpose
 
 `WFInfo.Headless` is a .NET 9 console project that runs WFInfo's real OCR/theme
-core natively on Linux and macOS. On macOS a Swift helper (`macos/`) gives
-the runner Apple Vision (Neural Engine capable) and ScreenCaptureKit. It links the actual WFInfo sources — no copies, no
+core natively on Linux and macOS. On macOS, Apple Vision reads the reward-strip
+text (Neural Engine capable) and ScreenCaptureKit captures the screen. It links the actual WFInfo sources — no copies, no
 mocks — and supplies compile-time seams for Windows-only types so the shared
 code type-checks without WPF/WinForms/Win32.
 
@@ -15,40 +15,61 @@ code type-checks without WPF/WinForms/Win32.
   boundary.
 - `Program.cs` — CLI: `--test <map.json> [out.json]`, `--theme-test
   <folder> [uiScale]` (`--theme-debug` accepted), `--selfcheck`, `--scan
-  [options]`. `--selfcheck` takes `--ocr auto|vision|tesseract`.
+  [options]`. `--selfcheck` and `--scan` take `--ocr auto|vision|tesseract`.
   Every `--test` run also copies the suite results to
   `<app dir>/ocr_runs/` (`latest.json` + one timestamped file, newest 60 kept)
   for the Warframe Info dashboard; every `--scan` run writes
   `<app dir>/scans/latest.json` (same retention) plus `scans/last.png`.
-- `Scan/` — the reward-screen scan feature (Linux-only, real behavior):
+- `Scan/` — the reward-screen scan feature (Linux and macOS, real behavior):
   `ScanRunner.cs` (capture → OCR → price → recommend → persist → notify),
-  `ScreenCapture.cs` (grim + wlr-randr), `EeLog.cs` (EE.log discovery + tail),
+  `ScreenCapture.cs` (grim + wlr-randr; macOS: ScreenCaptureKit through
+  `wfinfo-mac`), `EeLog.cs` (EE.log discovery + tail),
   `ScanWatcher.cs` (EE.log-driven automatic scanning), `PriceCache.cs` (local
   platinum cache with on-demand warframe.market refresh), `MarketSheet.cs`
-  (indexes `market_items.json`/`market_data.json`), `Notifier.cs` (notify-send),
+  (indexes `market_items.json`/`market_data.json`), `Notifier.cs` (notify-send;
+  macOS: osascript),
   `ScanModels.cs`/`ScanOptions.cs`/`Shell.cs`. The record shape is a contract
   with the dashboard's Scan page: the field list is in `README.md` (Scan) and
   the reader is `dashboard/src/lib/scan.ts` — change both together.
 - The scan captures one image per candidate: `--file` (an image on disk),
   `--region "X,Y WxH"` (one layout region, i.e. a window frame), `--output`
   (one monitor), else every output then the joined image. Region coordinates are
-  the compositor's own client geometry, so no conversion is needed.
+  the compositor's own client geometry, so no conversion is needed. On macOS,
+  `--window <id>` (a CGWindowID) captures one window, `--output <id>` (a
+  CGDirectDisplayID) one display, else every display, main display first.
 - `--watch` scans automatically: `ScanWatcher` tails EE.log and runs a scan per
   "Got rewards" line. The game writes that line before the panel is on screen,
   so a triggered scan re-captures until a part is recognised (or `--wait`
   expires) and writes no record for a screen it could not read. EE.log lives in
-  the Steam/Proton prefix; `--log`/`$WFINFO_EE_LOG` override the search.
+  the Steam/Proton prefix (macOS: `~/Library/Application Support/Steam`
+  compatdata, or a CrossOver bottle; the newest log wins); `--log`/
+  `$WFINFO_EE_LOG` override the search. Linux polls EE.log every 250 ms;
+  macOS reacts to file events (FileSystemWatcher, backed by FSEvents) with a
+  3 s backup poll, and falls back to the 250 ms poll if the watcher fails.
 - `macos/` — the macOS platform code (real behavior, not seams):
-  `wfinfo-mac.swift` (Swift helper: `selfcheck`, `ocr`, `devices`,
-  `displays`, `windows`, `capture`, `rewards`, `hotkey`, `synth`; JSON on
-  stdout; Vision through the Swift `RecognizeTextRequest`, so the minimum is
-  macOS 15), `Package.swift` (SwiftPM build of the same file, tools 5.9,
+  `wfinfo-mac.swift` (Swift helper: `rewards`, `selfcheck`, `ocr`, `devices`,
+  `displays`, `windows`, `capture`, `hotkey`, `synth`; JSON on stdout; Vision
+  through the Swift `RecognizeTextRequest`, so the minimum is macOS 15),
+  `Package.swift` (SwiftPM build of the same file, tools 5.9,
   `.macOS("15.0")`), `MacHelper.cs` (finds and runs the helper),
-  `OcrEngines.cs` (auto/vision/tesseract choice), `MacNative.cs` (libgdiplus
-  and Tesseract links, only for WFInfo's own pipeline). The csproj target
-  `BuildMacHelper` compiles the helper with
-  `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS only
-  (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+  `OcrEngines.cs` (auto/vision/tesseract choice),
+  `VisionRewardScan.cs` (the macOS reward scan, see below), `RewardLayout.cs`
+  (Vision lines → reward slots), `RewardLayoutTest.cs` (offline fixtures,
+  `--layout-test`), `NoTesseractService.cs` (no engines for Vision-only
+  runs), `MacNative.cs` (libgdiplus and Tesseract links for the developer
+  modes only). The csproj target `BuildMacHelper` compiles the helper
+  with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
+  only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+- On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
+  and reads in memory and writes the capture only into `scans/` (`--save`;
+  the accepted one becomes `scans/last.png`). The `--ocr tesseract` path gets
+  its capture on the helper's stdout (`capture ... -`). Keep it that way. The
+  Linux grim path still uses a per-run temp dir and deletes it.
+- The `rewards` JSON is a contract with `RewardLayout.cs` and
+  `VisionRewardScan.cs`: `source`, `width`, `height`, `screenScaling`,
+  `uiScaleMin`/`uiScaleMax`, `crop`, `lines[]` (`text`, `confidence`, `box`
+  in full-image pixels with a top-left origin), `saved`, `ms`. Keep it stable
+  when the Vision API changes.
 - `Platform/` — seams ONLY: `HeadlessMain.cs` (stub `Main`), `HeadlessServices.cs`
   (window-info service, process finder, screenshot/log-capture stubs,
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
@@ -69,18 +90,6 @@ code type-checks without WPF/WinForms/Win32.
   prefer removing the Windows-only dependency from the shared file instead.
 - `Scan/` and `macos/` are real feature code, not seams — seams stay in
   `Platform/`.
-- The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
-  macOS code lives in `macos/` or behind runtime checks
-  (`OperatingSystem.IsMacOS()`), never `#if`.
-- On macOS `--selfcheck` never loads libgdiplus: the helper renders the sample
-  with CoreText and reads it with Vision, so no `Bitmap`, `Graphics` or
-  `Image` runs in .NET. Only the modes that run WFInfo's own System.Drawing
-  pipeline (`--test`, `--theme-test`, `--scan`, `--selfcheck --ocr
-  tesseract`) call `MacNative.EnableGdiPlus`, which links Homebrew's
-  libgdiplus or tells the user to `brew install mono-libgdiplus`. Proof: run
-  the DLL with the real `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no
-  `libgdiplus` line may appear for the self-check (Homebrew's `bin/dotnet` is
-  a bash script, and SIP strips `DYLD_*` there).
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
   `notify-send` (verdict); the flake's dev shell and the `.#scan` app put all
   three on PATH, so never assume they exist system-wide.
@@ -90,6 +99,32 @@ code type-checks without WPF/WinForms/Win32.
   (`<app dir>/price_cache.json`): cache hits answer instantly, missing or stale
   slugs are fetched from warframe.market in parallel, failed fetches are NOT
   cached, and the sheet value is the offline fallback.
+- The macOS reward scan ("vision-layout", `OcrEngine: "vision-layout"`) does
+  NOT use WFInfo's extraction. WFInfo's extraction (theme colour filter, part
+  boxes) is System.Drawing code, and System.Drawing needs libgdiplus on
+  macOS; the user wants that library out of the scan, with no fallback.
+  Instead: `wfinfo-mac rewards` captures, crops WFInfo's name rows (the
+  `OCR.pixle*`/`pixelRewardLineHeight` constants, passed as arguments) and
+  runs Vision on the raw colour crop; `RewardLayout` keeps the lines in the
+  name rows, groups them into slots and joins wrapped names; each slot's
+  candidates go through WFInfo's own `OCR.PartNameValid`,
+  `Data.GetPartName` and `OCR.GetMaxAllowedLevenshteinDistance` (private, so
+  bound by reflection — never copy it). The UI scale comes from EE.cfg next to
+  EE.log (`--ui-scale auto`, WFInfo's rule); when it is unknown, a wide pass
+  estimates it and a second pass reads the exact crop, because Vision drops
+  names in a wide crop.
+- The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
+  The OCR engine is chosen in `headless/`; use runtime checks
+  (`OperatingSystem.IsMacOS()`), never `#if`.
+- On macOS the normal scan and `--selfcheck` never load libgdiplus: no
+  `Bitmap`, `Graphics` or `Image` runs in .NET (the helper renders the
+  self-check sample with CoreText). Only the developer modes (`--ocr
+  tesseract`, `--test`, `--theme-test`, `--selfcheck --ocr tesseract`) call
+  `MacNative.EnableGdiPlus`, which links Homebrew's libgdiplus or tells the
+  user to `brew install mono-libgdiplus`. Proof: run the DLL with the real
+  `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
+  appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
+  and SIP strips `DYLD_*` there).
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
@@ -98,9 +133,10 @@ code type-checks without WPF/WinForms/Win32.
   `tesseract-native` farm through `WFINFO_NATIVE_LIBS`. On macOS without that
   variable, `MacNative.EnableTesseract` links Homebrew's
   `libtesseract.5`/`libleptonica.6` into `<bin>/macos-native/` under the same
-  names — only when Tesseract runs; the Vision self-check never loads or
-  mentions Tesseract. `MacNative.EnableGdiPlus` links `libgdiplus.dylib` next
-  to `System.Drawing.Common.dll` (dyld does not search the Homebrew prefix).
+  names — only when Tesseract runs (`--ocr tesseract`, the OCR suite); Vision
+  runs never load or mention Tesseract. `MacNative.EnableGdiPlus` links
+  `libgdiplus.dylib` next to `System.Drawing.Common.dll` (dyld does not search
+  the Homebrew prefix) for the developer modes only.
 - `System.Drawing.Common` is pinned to 6.0.0: versions ≥ 7 throw
   PlatformNotSupportedException on Linux even with `EnableUnixSupport`.
 - Env vars honored by `Program.cs`:
@@ -108,8 +144,7 @@ code type-checks without WPF/WinForms/Win32.
   - `WFINFO_DATA_DIR` — overrides the app-data root (tessdata + market DBs).
     No effect on macOS (the runner warns): .NET does not read
     `XDG_CONFIG_HOME` there.
-  - `WFINFO_OCR_ENGINE` — default `--selfcheck --ocr` (auto, vision,
-    tesseract).
+  - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
 - Environment for OCR data dirs derives from the OS XDG config dir when
@@ -141,17 +176,24 @@ code type-checks without WPF/WinForms/Win32.
   `--scan` on any desktop.
 
 - macOS (no Nix): `brew install dotnet`, then plain `dotnet build`/`dotnet run
-  --project headless -- ...`. `mono-libgdiplus` and `tesseract` are needed
-  only for WFInfo's own pipeline (`--test`, `--theme-test`, `--scan`,
-  `--selfcheck --ocr tesseract`). The first Vision call of a new helper
-  binary prepares Apple's models (40–50 s once); later calls take about
-  190 ms.
-- `wfinfo-mac capture`/`rewards` need Screen Recording for the app that
-  starts them. Without it the error names the setting.
+  --project headless -- ...`. `mono-libgdiplus` and `tesseract` are optional:
+  only the developer modes (`--ocr tesseract`, `--test`, `--theme-test`) need
+  them.
+  The first Vision call of a new helper binary prepares Apple's models (40–50 s
+  once); later calls take about 190 ms (one image) or 250 ms (eight in one
+  call).
+- macOS capture needs Screen Recording for the app that starts the scan (the
+  terminal, or the app that runs the dashboard). Without it the capture error
+  names the setting.
 - `wfinfo-mac hotkey [--key ctrl+option+s] [--url http://127.0.0.1:8000/scan/run]`
   registers a global hotkey (Carbon, no Accessibility permission) that POSTs
   the dashboard's scan route. `--fire` sends one request and exits (the test
   path without a key press).
+- No real reward screenshot exists yet. Test the macOS scan with synthetic
+  screens: `wfinfo-mac synth --out <png> --names "A|B|C" --ui-scale <u>
+  [--color "#hex"] [--squad "p1|p2"]`, then `--scan --no-notify --file <png>
+  --ui-scale <u|unknown>`. Synthetic screens prove the crop and the layout,
+  not real game rendering.
 
 ## Verification
 
@@ -170,10 +212,12 @@ code type-checks without WPF/WinForms/Win32.
   line containing "Got rewards" to `<path>` must produce one priced record and
   exit 0. This is the trigger-path check that needs no game session; verify it
   before claiming the watch works.
-
 - macOS: `dotnet run --project headless -- --selfcheck` (Vision) — PASS, and
-  no libgdiplus in the loaded images (see the proof above);
-  `--selfcheck --ocr tesseract` — PASS with Homebrew's libraries.
+  no libgdiplus in the loaded images (see the proof above).
+- macOS: `dotnet run --project headless -- --layout-test` — all cases PASS
+  (offline, no capture).
+- macOS: `--scan --no-notify --file <synth png> --ui-scale unknown` — every
+  synthetic name priced.
 - macOS: `headless/bin/Debug/net9.0/wfinfo-mac devices` lists the compute
   devices Vision offers; `swift build -c release` in `headless/macos` must
   build the same helper.
