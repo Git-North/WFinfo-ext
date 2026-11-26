@@ -8,36 +8,58 @@ import {
 
 Deno.test("resolveAppDir prefers APPDATA on Windows-style env", () => {
   assertEquals(
-    resolveAppDir({ APPDATA: "C:\\Users\\x\\AppData\\Roaming" }),
+    resolveAppDir({ APPDATA: "C:\\Users\\x\\AppData\\Roaming" }, "windows"),
     "C:\\Users\\x\\AppData\\Roaming/WFInfo",
   );
 });
 
 Deno.test("resolveAppDir honors WFINFO_DATA_DIR like the headless runner", () => {
   assertEquals(
-    resolveAppDir({ WFINFO_DATA_DIR: "/tmp/wf-root" }),
+    resolveAppDir({ WFINFO_DATA_DIR: "/tmp/wf-root" }, "linux"),
     "/tmp/wf-root/WFInfo",
   );
 });
 
 Deno.test("resolveAppDir uses XDG_CONFIG_HOME when present", () => {
   assertEquals(
-    resolveAppDir({ XDG_CONFIG_HOME: "/home/u/.config" }),
+    resolveAppDir({ XDG_CONFIG_HOME: "/home/u/.config" }, "linux"),
     "/home/u/.config/WFInfo",
   );
 });
 
 Deno.test("resolveAppDir falls back to HOME/.config", () => {
   assertEquals(
-    resolveAppDir({ HOME: "/home/u" }),
+    resolveAppDir({ HOME: "/home/u" }, "linux"),
     "/home/u/.config/WFInfo",
   );
 });
 
 Deno.test("WFINFO_DATA_DIR wins over XDG_CONFIG_HOME", () => {
   assertEquals(
-    resolveAppDir({ WFINFO_DATA_DIR: "/a", XDG_CONFIG_HOME: "/b" }),
+    resolveAppDir({ WFINFO_DATA_DIR: "/a", XDG_CONFIG_HOME: "/b" }, "linux"),
     "/a/WFInfo",
+  );
+});
+
+Deno.test("resolveAppDir on macOS uses Application Support like .NET", () => {
+  assertEquals(
+    resolveAppDir({ HOME: "/Users/u" }, "darwin"),
+    "/Users/u/Library/Application Support/WFInfo",
+  );
+});
+
+Deno.test("resolveAppDir on macOS ignores WFINFO_DATA_DIR and XDG, like the runner", () => {
+  assertEquals(
+    resolveAppDir(
+      {
+        HOME: "/Users/u",
+        WFINFO_DATA_DIR: "/a",
+        XDG_CONFIG_HOME: "/b",
+        APPDATA: "/c",
+      },
+      "darwin",
+    ),
+    "/Users/u/Library/Application Support/WFInfo",
   );
 });
 

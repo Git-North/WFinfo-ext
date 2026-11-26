@@ -3,6 +3,10 @@ import {
   type CommandOutput,
   type CommandRunner,
   discoverTargets,
+  macDisplayLabel,
+  macWindowLabel,
+  parseMacDisplays,
+  parseMacWindows,
   parseMangoWindows,
   parseRandrDisplays,
   parseRandrTextDisplays,
@@ -188,7 +192,7 @@ Deno.test("discovery reads displays and windows from this host", async () => {
     },
   });
 
-  const targets = await discoverTargets(runner);
+  const targets = await discoverTargets(runner, { os: "linux" });
 
   assertEquals(targets.displays.map((d) => d.name), ["DP-1"]);
   assertEquals(targets.windows.map((w) => w.id), ["4"]);
@@ -199,7 +203,7 @@ Deno.test("discovery reads displays and windows from this host", async () => {
 Deno.test("discovery without compositor tools reports what is missing", async () => {
   const { runner } = fakeRunner({});
 
-  const targets = await discoverTargets(runner);
+  const targets = await discoverTargets(runner, { os: "linux" });
 
   assertEquals(targets.displays, []);
   assertEquals(targets.windows, []);
@@ -216,7 +220,7 @@ Deno.test("discovery names windows it cannot place when only wlrctl answers", as
     },
   });
 
-  const targets = await discoverTargets(runner);
+  const targets = await discoverTargets(runner, { os: "linux" });
 
   assertEquals(targets.windows, []);
   assertStringIncludes(targets.notes.join(" "), "steam_app_230410 — Warframe");
@@ -311,4 +315,224 @@ Deno.test("tokens round-trip and reject anything else", () => {
   assertStringIncludes(options.displays[0].label, "1920×1080");
   assertEquals(options.windows[0].value, "window:7");
   assertEquals(regionOf(1930, 44, 1900, 1026), "1930,44 1900x1026");
+});
+
+/* ------------------------------------------------------------------ */
+/* macOS: the wfinfo-mac helper                                        */
+/* ------------------------------------------------------------------ */
+
+const HELPER = "/repo/headless/bin/Debug/net9.0/wfinfo-mac";
+
+/** `wfinfo-mac displays` as the helper prints it: points plus pixels. */
+const macDisplaysJson = [
+  {
+    id: 3,
+    name: "LG HDR 4K",
+    main: false,
+    builtin: false,
+    x: 1728,
+    y: -200,
+    width: 2560,
+    height: 1440,
+    pixelWidth: 5120,
+    pixelHeight: 2880,
+  },
+  {
+    id: 1,
+    name: "Built-in Retina Display",
+    main: true,
+    builtin: true,
+    x: 0,
+    y: 0,
+    width: 1728,
+    height: 1117,
+    pixelWidth: 3456,
+    pixelHeight: 2234,
+  },
+];
+
+/** `wfinfo-mac windows`: layer-0 windows; titles empty without permission. */
+const macWindowsJson = [
+  {
+    id: 81,
+    owner: "Claude",
+    pid: 1339,
+    title: "",
+    x: 0,
+    y: 33,
+    width: 1728,
+    height: 1084,
+    frontmost: false,
+  },
+  {
+    id: 512,
+    owner: "wine64-preloader",
+    pid: 4242,
+    title: "Warframe",
+    x: 0,
+    y: 0,
+    width: 1728,
+    height: 1117,
+    frontmost: true,
+  },
+  {
+    id: 40,
+    owner: "Finder",
+    pid: 750,
+    title: "",
+    x: 404,
+    y: 188,
+    width: 920,
+    height: 464,
+    frontmost: false,
+  },
+  { id: 9, owner: "Broken", x: 0, y: 0, width: 0, height: 10 },
+  { owner: "No id", x: 0, y: 0, width: 400, height: 300 },
+];
+
+Deno.test("wfinfo-mac displays become id-named displays, main first", () => {
+  const displays = parseMacDisplays(macDisplaysJson);
+
+  assertEquals(displays.map((d) => d.name), ["1", "3"]);
+  assertEquals(displays[0], {
+    name: "1",
+    model: "Built-in Retina Display",
+    width: 1728,
+    height: 1117,
+    x: 0,
+    y: 0,
+    main: true,
+  });
+  assertEquals(
+    macDisplayLabel(displays[0]),
+    "Built-in Retina Display · 1728×1117 pt · main",
+  );
+  assertEquals(macDisplayLabel(displays[1]), "LG HDR 4K · 2560×1440 pt");
+  assertEquals(parseMacDisplays({ id: 1 }), [], "not an array");
+});
+
+Deno.test("wfinfo-mac windows sort frontmost first, then by owner", () => {
+  const windows = parseMacWindows(macWindowsJson);
+
+  assertEquals(windows.map((w) => w.id), ["512", "81", "40"]);
+  assertEquals(windows.map((w) => w.appId), [
+    "wine64-preloader",
+    "Claude",
+    "Finder",
+  ]);
+  assertEquals(
+    macWindowLabel(windows[0]),
+    "wine64-preloader · Warframe (1728×1117 pt) · frontmost",
+  );
+  assertEquals(macWindowLabel(windows[2]), "Finder (920×464 pt)");
+});
+
+Deno.test("macOS discovery asks the helper for displays and windows", async () => {
+  const { runner, calls } = fakeRunner({
+    [`${HELPER} displays`]: {
+      code: 0,
+      stdout: JSON.stringify(macDisplaysJson),
+    },
+    [`${HELPER} windows`]: {
+      code: 0,
+      stdout: JSON.stringify(macWindowsJson),
+    },
+  });
+
+  const targets = await discoverTargets(runner, {
+    os: "darwin",
+    macHelper: HELPER,
+  });
+
+  assertEquals(calls, [`${HELPER} displays`, `${HELPER} windows`]);
+  assertEquals(targets.os, "darwin");
+  assertEquals(targets.displays.map((d) => d.name), ["1", "3"]);
+  assertEquals(targets.windows.map((w) => w.id), ["512", "81", "40"]);
+  assertEquals(targets.notes, [], "one titled window: no permission note");
+
+  const options = toOptions(targets);
+  assertEquals(options.displays[0], {
+    value: "display:1",
+    label: "Built-in Retina Display · 1728×1117 pt · main",
+  });
+  assertEquals(options.windows[0].value, "window:512");
+  assertStringIncludes(options.windows[0].label, "frontmost");
+});
+
+Deno.test("macOS: a display is --output <id> and a window is --window <id>", async () => {
+  const { runner } = fakeRunner({
+    [`${HELPER} displays`]: {
+      code: 0,
+      stdout: JSON.stringify(macDisplaysJson),
+    },
+    [`${HELPER} windows`]: {
+      code: 0,
+      stdout: JSON.stringify(macWindowsJson),
+    },
+  });
+  const targets = await discoverTargets(runner, {
+    os: "darwin",
+    macHelper: HELPER,
+  });
+
+  const byDisplay = resolveCapture(targets, "display:3", "");
+  assertTrue(byDisplay.ok);
+  if (!byDisplay.ok) return;
+  assertEquals(byDisplay.capture, {
+    args: ["--output", "3"],
+    label: "LG HDR 4K · 2560×1440 pt",
+  });
+
+  const byWindow = resolveCapture(targets, "display:1", "window:512");
+  assertTrue(byWindow.ok);
+  if (!byWindow.ok) return;
+  assertEquals(byWindow.capture.args, ["--window", "512"]);
+  assertStringIncludes(byWindow.capture.label, "Warframe");
+
+  const gone = resolveCapture(targets, "", "window:999");
+  assertTrue(!gone.ok, "a closed window is refused");
+  const unplugged = resolveCapture(targets, "display:7", "");
+  assertTrue(!unplugged.ok, "an unknown display id is refused");
+});
+
+Deno.test("macOS discovery without the helper adds a note, never fails", async () => {
+  const { runner, calls } = fakeRunner({});
+
+  const targets = await discoverTargets(runner, {
+    os: "darwin",
+    macHelper: HELPER,
+  });
+
+  assertEquals(targets.displays, []);
+  assertEquals(targets.windows, []);
+  assertEquals(calls, [`${HELPER} displays`], "one probe is enough");
+  assertEquals(targets.notes.length, 1);
+  assertStringIncludes(targets.notes[0], "build headless on macOS");
+  assertStringIncludes(targets.notes[0], HELPER);
+
+  const automatic = resolveCapture(targets, "", "");
+  assertTrue(automatic.ok);
+  if (!automatic.ok) return;
+  assertEquals(automatic.capture.args, []);
+});
+
+Deno.test("macOS discovery notes failed lists and hidden window titles", async () => {
+  const { runner } = fakeRunner({
+    [`${HELPER} displays`]: { code: 2, stdout: "" },
+    [`${HELPER} windows`]: {
+      code: 0,
+      stdout: JSON.stringify([macWindowsJson[0], macWindowsJson[2]]),
+    },
+  });
+
+  const targets = await discoverTargets(runner, {
+    os: "darwin",
+    macHelper: HELPER,
+  });
+
+  assertEquals(targets.displays, []);
+  assertEquals(targets.windows.length, 2);
+  assertEquals(targets.notes.length, 2);
+  assertStringIncludes(targets.notes[0], "exit code 2");
+  assertStringIncludes(targets.notes[1], "Screen Recording");
 });

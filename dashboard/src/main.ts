@@ -12,14 +12,18 @@
  *   PORT                 listen port (default 8000; a busy port is a startup
  *                        error, never a fallback port)
  *   WFINFO_DATA_DIR      mirrors the headless runner: acts as the config root,
- *                        app dir becomes <dir>/WFInfo (default ~/.config/WFInfo)
+ *                        app dir becomes <dir>/WFInfo (default ~/.config/WFInfo;
+ *                        ignored on macOS: ~/Library/Application Support/WFInfo)
  *   WFINFO_GOVUK_DIR     unpacked govuk-frontend dist/govuk (offline override)
  *   WFINFO_CACHE_DIR     replace the XDG cache root for govuk assets
  *   WFINFO_SCAN_CMD      shell command that runs one reward-screen scan
  *                        (default: the flake's scan app, nix run
- *                        <checkout>#scan -- --no-notify)
+ *                        <checkout>#scan -- --no-notify; on macOS dotnet runs
+ *                        the headless runner, prebuilt DLL else dotnet run)
  *   WFINFO_SCAN_ROOT     checkout the default command builds the runner from
  *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests from another host
+ *   WFINFO_MAC_HELPER    macOS: wfinfo-mac path for the display/window lists
+ *                        (default <checkout>/headless/bin/Debug/net9.0/wfinfo-mac)
  *
  * No runtime dependencies beyond the Deno standard library.
  */
@@ -62,6 +66,7 @@ import {
 } from "./lib/view.ts";
 import { parseScanResult, resolveBest, type ScanResult } from "./lib/scan.ts";
 import { Scanner } from "./lib/scanner.ts";
+import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
 import {
   denoRunner,
   discoverTargets,
@@ -104,16 +109,20 @@ function isCheckout(root: string): boolean {
  * works from any directory and from the packaged `.#dashboard` app, whose own
  * copy lives in the read-only store. Without a checkout the app reports its
  * own "no headless/WFInfo.Headless.csproj" error; set WFINFO_SCAN_CMD to run
- * the scan another way.
+ * the scan another way. On macOS the default is `dotnet` (src/lib/platform.ts).
  */
 const scanRoot = [Deno.cwd(), REPO_ROOT].find(isCheckout);
 const flakeRoot = scanRoot ?? REPO_ROOT;
 const scanCommand = (Deno.env.get("WFINFO_SCAN_CMD") ?? "").trim() ||
-  `${scanRoot ? `WFINFO_SCAN_ROOT='${quote(scanRoot)}' ` : ""}` +
-    `nix run '${quote(flakeRoot)}'#scan -- --no-notify`;
+  defaultScanCommand({ os: Deno.build.os, scanRoot, flakeRoot, isFile });
+const MAC_HELPER = macHelperPath(Deno.env.toObject(), flakeRoot);
 
-function quote(path: string): string {
-  return path.replaceAll("'", "'\\''");
+function isFile(path: string): boolean {
+  try {
+    return Deno.statSync(path).isFile;
+  } catch {
+    return false;
+  }
 }
 
 const scanner = new Scanner({ command: scanCommand });
@@ -142,7 +151,9 @@ async function captureTargets(force = false): Promise<ScanTargets> {
   if (!force && targetCache !== null && now - targetCache.at < TARGETS_TTL_MS) {
     return targetCache.targets;
   }
-  const targets = await discoverTargets(denoRunner());
+  const targets = await discoverTargets(denoRunner(), {
+    macHelper: MAC_HELPER,
+  });
   targetCache = { at: now, targets };
   return targets;
 }

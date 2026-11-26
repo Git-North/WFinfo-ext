@@ -16,6 +16,12 @@
  * Window geometry is read from the compositor in layout coordinates — the same
  * space as `grim -g` and as the monitor positions — so a client rectangle is a
  * valid capture region as-is.
+ *
+ * On macOS the one source is the headless runner's `wfinfo-mac` helper:
+ *   `wfinfo-mac displays`  displays: CGDirectDisplayID, name, size in points
+ *   `wfinfo-mac windows`   on-screen windows: CGWindowID, owner, title, frame
+ * There the runner captures by id, so a display becomes `--output <id>` and a
+ * window `--window <id>` (no region).
  */
 
 /** Result of one command; `code` is null when the command could not start. */
@@ -38,6 +44,8 @@ export interface DisplayTarget {
   height: number | null;
   x: number | null;
   y: number | null;
+  /** macOS only: the main display (menu bar). */
+  main?: boolean;
 }
 
 export interface WindowTarget {
@@ -59,6 +67,12 @@ export interface ScanTargets {
   windows: WindowTarget[];
   /** Why a list is short: a missing tool, or an answer that did not parse. */
   notes: string[];
+  /**
+   * Host OS of the discovery. "darwin" means macOS ids: a display name is a
+   * CGDirectDisplayID, a window id a CGWindowID captured with `--window`.
+   * Absent means Linux (Wayland), where a window is captured as a region.
+   */
+  os?: string;
 }
 
 /** Select entry for the scan page. */
@@ -290,6 +304,76 @@ export function parseToplevelNames(text: string): string[] {
   return names;
 }
 
+/**
+ * `wfinfo-mac displays`: one entry per active display. `id` is the
+ * CGDirectDisplayID the runner takes as `--output`; the frame is in points.
+ */
+export function parseMacDisplays(raw: unknown): DisplayTarget[] {
+  if (!Array.isArray(raw)) return [];
+  const displays: DisplayTarget[] = [];
+  for (const entry of raw) {
+    const d = record(entry);
+    if (d === null) continue;
+    const id = int(d.id);
+    if (id === null || id < 0) continue;
+    displays.push({
+      name: String(id),
+      model: str(d.name),
+      width: int(d.width),
+      height: int(d.height),
+      x: int(d.x),
+      y: int(d.y),
+      main: d.main === true,
+    });
+  }
+  // Main display first, then by id: the default choice is the menu-bar screen.
+  return displays.sort((a, b) =>
+    Number(b.main) - Number(a.main) || Number(a.name) - Number(b.name)
+  );
+}
+
+/**
+ * `wfinfo-mac windows`: on-screen windows with their frame in points. `id` is
+ * the CGWindowID the runner takes as `--window`. The owner is the process
+ * name (a game under a compatibility layer shows its loader's name), and the
+ * title is empty without Screen Recording permission.
+ */
+export function parseMacWindows(raw: unknown): WindowTarget[] {
+  if (!Array.isArray(raw)) return [];
+  const windows: WindowTarget[] = [];
+  for (const entry of raw) {
+    const w = record(entry);
+    if (w === null) continue;
+    const id = int(w.id);
+    const x = int(w.x);
+    const y = int(w.y);
+    const width = int(w.width);
+    const height = int(w.height);
+    if (id === null || id < 0 || x === null || y === null) continue;
+    if (width === null || height === null || width <= 0 || height <= 0) {
+      continue;
+    }
+    windows.push({
+      id: String(id),
+      appId: str(w.owner) ?? "unknown",
+      title: str(w.title) ?? "",
+      monitor: null,
+      x,
+      y,
+      width,
+      height,
+      focused: w.frontmost === true,
+    });
+  }
+  // Frontmost first, then by owner, title and id: a stable list.
+  return windows.sort((a, b) =>
+    Number(b.focused) - Number(a.focused) ||
+    a.appId.localeCompare(b.appId, "en") ||
+    a.title.localeCompare(b.title, "en") ||
+    Number(a.id) - Number(b.id)
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Discovery                                                           */
 /* ------------------------------------------------------------------ */
@@ -396,11 +480,92 @@ async function readWindows(
   return [];
 }
 
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** macOS: displays and windows from the runner's `wfinfo-mac` helper. */
+async function readMacTargets(
+  runner: CommandRunner,
+  helper: string,
+  notes: string[],
+): Promise<ScanTargets> {
+  const empty: ScanTargets = { displays: [], windows: [], notes, os: "darwin" };
+
+  const displaysOut = await runner.run(
+    helper,
+    ["displays"],
+    COMMAND_TIMEOUT_MS,
+  );
+  if (displaysOut.code === null) {
+    notes.push(
+      `The wfinfo-mac helper was not found (${helper}); build headless on macOS to list displays and windows. A scan then captures every display.`,
+    );
+    return empty;
+  }
+
+  let displays: DisplayTarget[] = [];
+  if (displaysOut.code === 0) {
+    displays = parseMacDisplays(parseJson(displaysOut.stdout));
+    if (displays.length === 0) {
+      notes.push(
+        "wfinfo-mac returned no displays; a scan then captures every display.",
+      );
+    }
+  } else {
+    notes.push(
+      `wfinfo-mac could not list the displays (exit code ${displaysOut.code}); a scan then captures every display.`,
+    );
+  }
+
+  const windowsOut = await runner.run(helper, ["windows"], COMMAND_TIMEOUT_MS);
+  let windows: WindowTarget[] = [];
+  if (windowsOut.code === 0) {
+    windows = parseMacWindows(parseJson(windowsOut.stdout));
+    if (windows.length === 0) {
+      notes.push(
+        "No windows found; open Warframe and refresh the list to capture its window.",
+      );
+    } else if (windows.every((w) => w.title === "")) {
+      notes.push(
+        "Window titles are hidden: the app that runs the dashboard has no Screen Recording permission (System Settings › Privacy & Security › Screen Recording). Screen capture needs it too.",
+      );
+    }
+  } else {
+    notes.push(
+      windowsOut.code === null
+        ? `The wfinfo-mac helper did not start for the window list (${helper}); the display list above still works.`
+        : `wfinfo-mac could not list the windows (exit code ${windowsOut.code}); the display list above still works.`,
+    );
+  }
+
+  return { displays, windows, notes, os: "darwin" };
+}
+
+export interface DiscoverOptions {
+  /** Host OS, as `Deno.build.os` spells it (default: this host). */
+  os?: string;
+  /** macOS: path of the `wfinfo-mac` helper (default: `wfinfo-mac` on PATH). */
+  macHelper?: string;
+}
+
 /** Lists what the scan can capture: displays and windows of this host. */
 export async function discoverTargets(
   runner: CommandRunner,
+  options: DiscoverOptions = {},
 ): Promise<ScanTargets> {
   const notes: string[] = [];
+  if ((options.os ?? Deno.build.os) === "darwin") {
+    return await readMacTargets(
+      runner,
+      options.macHelper ?? "wfinfo-mac",
+      notes,
+    );
+  }
   const displays = await readDisplays(runner, notes);
   const windows = await readWindows(runner, notes);
   return { displays, windows, notes };
@@ -461,16 +626,35 @@ export function windowLabel(w: WindowTarget): string {
   }`;
 }
 
+/** macOS: "Built-in Retina Display · 1728×1117 pt · main". */
+export function macDisplayLabel(d: DisplayTarget): string {
+  const size = d.width === null || d.height === null
+    ? ""
+    : ` · ${d.width}×${d.height} pt`;
+  return `${d.model ?? `Display ${d.name}`}${size}${d.main ? " · main" : ""}`;
+}
+
+/** macOS: "Crest · Title (1728×1084 pt) · frontmost". */
+export function macWindowLabel(w: WindowTarget): string {
+  const title = w.title === "" ? "" : ` · ${w.title}`;
+  return `${w.appId}${title} (${w.width}×${w.height} pt)${
+    w.focused ? " · frontmost" : ""
+  }`;
+}
+
+const isMac = (targets: ScanTargets): boolean => targets.os === "darwin";
+
 /** Select entries for the scan page, in list order. */
 export function toOptions(targets: ScanTargets): ScanTargetOptions {
+  const mac = isMac(targets);
   return {
     displays: targets.displays.map((d) => ({
       value: displayToken(d.name),
-      label: displayLabel(d),
+      label: mac ? macDisplayLabel(d) : displayLabel(d),
     })),
     windows: targets.windows.map((w) => ({
       value: windowToken(w.id),
-      label: windowLabel(w),
+      label: mac ? macWindowLabel(w) : windowLabel(w),
     })),
     notes: targets.notes,
   };
@@ -496,7 +680,7 @@ export function parseToken(token: string): CaptureRequest | null {
  * runner's own default). A chosen window wins over a chosen display, because a
  * window is the narrower request; a stale window, a stale display, or a token
  * this host does not know is refused instead of silently capturing something
- * else.
+ * else. On macOS a window is passed by id (`--window`), not as a region.
  */
 export function resolveCapture(
   targets: ScanTargets,
@@ -519,6 +703,12 @@ export function resolveCapture(
           "That window is not open any more — refresh the window list and choose again.",
       };
     }
+    if (isMac(targets)) {
+      return {
+        ok: true,
+        capture: { args: ["--window", found.id], label: macWindowLabel(found) },
+      };
+    }
     return {
       ok: true,
       capture: {
@@ -536,10 +726,9 @@ export function resolveCapture(
     if (request === null || request.kind !== "display") {
       return { ok: false, error: `Unknown display "${displayChoice}".` };
     }
-    if (
-      targets.displays.length > 0 &&
-      !targets.displays.some((d) => d.name === request.name)
-    ) {
+    const found = targets.displays.find((d) => d.name === request.name) ??
+      null;
+    if (targets.displays.length > 0 && found === null) {
       return {
         ok: false,
         error:
@@ -550,7 +739,9 @@ export function resolveCapture(
       ok: true,
       capture: {
         args: ["--output", request.name],
-        label: request.name,
+        label: isMac(targets) && found !== null
+          ? macDisplayLabel(found)
+          : request.name,
       },
     };
   }
