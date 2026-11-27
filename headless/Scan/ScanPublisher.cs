@@ -125,6 +125,19 @@ namespace WFInfo.Scan
         }
 
         /// <summary>
+        /// Adds a notice to latest.json if it still holds this scan's record
+        /// (record file only, atomic); used for a late overlay pin failure.
+        /// </summary>
+        public void AddNotice(string scanId, string notice)
+        {
+            ScanResult latest = ReadLatest();
+            if (latest == null || latest.ScanId != scanId) return;
+            latest.Notice = notice;
+            File.WriteAllText(PendingRecord, JsonConvert.SerializeObject(latest, Formatting.Indented));
+            File.Move(PendingRecord, LatestPath, overwrite: true);
+        }
+
+        /// <summary>
         /// Publishes one scan record. The pending screenshot (if the caller
         /// wrote one) goes with it, unless the keep-last-good rule keeps the
         /// previous pair; then the pending screenshot is deleted. Returns the

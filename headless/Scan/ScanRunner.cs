@@ -42,6 +42,30 @@ namespace WFInfo.Scan
         /// macOS Vision layout scan (no System.Drawing); null runs WFInfo's own
         /// extraction with Tesseract (Linux, or `--ocr tesseract`).
         /// </param>
+        /// <summary>Pins the overlay for new watch records; null (the default) sends nothing.</summary>
+        public OverlayAutoPin AutoPin { get; set; }
+
+        /// <summary>
+        /// Records an overlay call that failed. It never fails a scan: it goes to
+        /// the log and, for a pin, as a notice on the record that asked for it.
+        /// </summary>
+        public void ReportOverlayFailure(string command, OverlayPinResult result, ScanResult record)
+        {
+            ErrorInfo info = ErrorCatalog.Get(result.ErrorCode);
+            string head = $"Overlay {command} failed: {result.ErrorCode} {result.ErrorName}";
+            Console.Error.WriteLine("WARNING: " + head + (info == null ? string.Empty : $" — {info.Title}. {info.Action}"));
+            Main.AddLog(head);
+            if (record == null) return;
+            try
+            {
+                _publisher.AddNotice(record.ScanId, head);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Main.AddLog("Could not add the overlay notice: " + ex.Message);
+            }
+        }
+
         public ScanRunner(ScanOptions options, IWindowInfoService window, MarketSheet sheet, PriceCache cache, ApplicationSettings settings,
             VisionRewardScan visionLayout)
         {
@@ -438,6 +462,7 @@ namespace WFInfo.Scan
             ScanResult published = Persist(result, out bool keptPrevious);
             Print(result);
             if (keptPrevious) Console.WriteLine($"  kept:     the last good record ({published.Notice})");
+            if (published != null && !keptPrevious && result.Trigger == TriggerWatch) AutoPin?.OnPublished(published);
 
             if (notify) SendNotification(result);
             if (_options.PrintJson) Console.WriteLine(JsonConvert.SerializeObject(result, Formatting.Indented));

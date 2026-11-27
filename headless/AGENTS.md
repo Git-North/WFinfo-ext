@@ -313,6 +313,11 @@ code type-checks without WPF/WinForms/Win32.
   as `~`; a success answer is the plugin's own.
 - The feature is off by default. The wrapper reads no setting: its caller
   checks `overlayPin` in `wfinfo-ext-settings.json`.
+- `Scan/OverlayAutoPin.cs` is the only caller in the scan flow: watch scans
+  only, pin on `ScanNews.FoundNewNames` per reward screen, unpin on
+  `EeLog.MatchRewardEnd` and before the watch ends, only after a pin that
+  changed `browser`; calls run in order, off the scan's path; failures go to
+  `ReportOverlayFailure` (log + notice), never to the scan result.
 - `Pin`/`Unpin` block. A scan calls `RequestAsync` or accepts the wait. After a
   pin, unpin only when `OverlayPinResult.Changed("browser")` was true: else the
   user had pinned the browser. Do not unpin `all`, which also unpins the

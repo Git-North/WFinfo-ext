@@ -377,13 +377,22 @@ namespace WFInfo
                     cancellation.Cancel();
                 });
 
+            var autoPin = new OverlayAutoPin(
+                () => ExtSettings.Load().OverlayPin,
+                command => OverlayPin.RequestAsync(command, OverlayPin.Browser),
+                runner.ReportOverlayFailure);
+            runner.AutoPin = autoPin;
+
             try
             {
-                var watcher = new ScanWatcher(logPath, options, runner.RunWatchAsync, Console.Out);
+                var watcher = new ScanWatcher(logPath, options, runner.RunWatchAsync, Console.Out,
+                    autoPin.OnRewardScreenEnded);
                 return await watcher.RunAsync(cancellation.Token).ConfigureAwait(false);
             }
             finally
             {
+                // Unpin what we pinned (also after --once and Ctrl-C) before leaving.
+                await autoPin.FlushAsync().ConfigureAwait(false);
                 Console.CancelKeyPress -= onCancelKeyPress;
                 cancellation.Dispose();
             }

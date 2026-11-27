@@ -286,11 +286,23 @@ earlier 250 ms poll took about 208 ms on Linux.
 `<app dir>/wfinfo-ext-settings.json` holds two switches, both off by default:
 `{"version":1,"notifications":false,"overlayPin":false}`. `notifications`
 turns on the desktop notification for scans that the EE.log watch starts;
-`overlayPin` pins the overlay after a scan with names. The dashboard's Scan page
+`overlayPin` pins the overlay after a watch scan finds new reward names (see
+"Overlay auto-pin" below). The dashboard's Scan page
 writes the file; the runner only reads it (`Scan/ExtSettings.cs`), at each scan
 start and each watch trigger, so a change applies without a restart. A missing
 file means all off. An unreadable or invalid file also means all off, plus the
 warning SET-001 (Scroll).
+
+### Overlay auto-pin
+
+With `overlayPin` on, the EE.log watch (`--watch`) pins the Millennium
+plugin's `browser` window when a scan publishes reward names that this reward
+screen has not pinned for yet; a scan with no new names sends nothing. When
+EE.log shows the screen ended ("MatchingService::EndSession" or "Relic timer
+closed", the lines WFInfo uses), the watch unpins it, but only if its own pin
+changed the window (a window you pinned stays pinned). It also unpins before it
+stops. A manual scan never pins, because nothing would unpin it. A failed call
+never fails a scan: it is printed, logged, and added to that scan's notice.
 
 ### Game access
 
