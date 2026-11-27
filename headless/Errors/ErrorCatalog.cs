@@ -43,7 +43,7 @@ namespace WFInfo.Errors
     /// detail is extra context for the record and the crash report and must
     /// never hold personal data (no EE.log text, IP, e-mail or home path).
     /// </summary>
-    internal sealed class ScanFailure : Exception
+    internal sealed class ScanFailure : InvalidOperationException
     {
         public ScanFailure(string code, string detail = null, Exception inner = null)
             : base(BuildMessage(code, detail), inner)
