@@ -80,12 +80,23 @@ async function alive(pid: number): Promise<boolean> {
     } catch {
       return false;
     }
-    // Linux: field 3 of /proc/<pid>/stat is the state ("Z" = zombie).
-    const stat = await Deno.readTextFile(`/proc/${pid}/stat`).catch(() => "");
-    if (/^\d+ \(.*\) Z /.test(stat)) return false;
+    if (await zombie(pid)) return false;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return true;
+}
+
+/** True when `pid` is a zombie: `/proc` on Linux, `ps` where it is missing. */
+async function zombie(pid: number): Promise<boolean> {
+  // Linux: field 3 of /proc/<pid>/stat is the state ("Z" = zombie).
+  const stat = await Deno.readTextFile(`/proc/${pid}/stat`).catch(() => null);
+  if (stat !== null) return /^\d+ \(.*\) Z /.test(stat);
+  const ps = await new Deno.Command("ps", {
+    args: ["-o", "stat=", "-p", `${pid}`],
+    stdout: "piped",
+    stderr: "null",
+  }).output().catch(() => null);
+  return ps !== null && new TextDecoder().decode(ps.stdout).trim()[0] === "Z";
 }
 
 Deno.test({
@@ -150,6 +161,51 @@ Deno.test({
       scanner.stop(); // A stop with nothing in flight is a no-op.
     } finally {
       await Deno.remove(pidFile);
+    }
+  },
+});
+
+Deno.test({
+  name: "scanner stops reading output held by a process outside the group",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    // A helper starts `sleep 5` in its own session with the run's pipes, so
+    // no group kill reaches it, and exits. The run must end soon after `sh`,
+    // not when the escaped `sleep` closes the pipes.
+    const dir = await Deno.makeTempDir();
+    const pidFile = `${dir}/pid`;
+    const helper = `${dir}/escape.ts`;
+    await Deno.writeTextFile(
+      helper,
+      `const child = new Deno.Command("sleep", { args: ["5"], detached: true })
+        .spawn();
+      await Deno.writeTextFile(Deno.args[0], String(child.pid));
+      child.unref();`,
+    );
+    try {
+      const scanner = new Scanner({
+        command: `'${Deno.execPath()}' run -A '${helper}' '${pidFile}'`,
+      });
+      const startedMs = Date.now();
+
+      const outcome = await scanner.run();
+
+      assertEquals(outcome.status, "ok");
+      assertTrue(
+        Date.now() - startedMs < 4000,
+        "the run ended after the grace, not when the escaped process exited",
+      );
+      assertTrue(!scanner.busy, "the scanner is free again");
+    } finally {
+      const pid = await readPid(pidFile).catch(() => null);
+      if (pid !== null) {
+        try {
+          Deno.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      await Deno.remove(dir, { recursive: true });
     }
   },
 });
