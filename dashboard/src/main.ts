@@ -45,7 +45,7 @@ import {
   slugForName,
 } from "./lib/items.ts";
 import { extractRewardEvents, type RewardLogEvent } from "./lib/recent.ts";
-import { logEventsResponse } from "./lib/logwatch.ts";
+import { dashboardSources, logEventsResponse } from "./lib/logwatch.ts";
 import { govukAsset, warmGovuk } from "./lib/govuk.ts";
 import { fetchItemStats, type LiveStats } from "./lib/wfm.ts";
 import {
@@ -471,6 +471,8 @@ function toScanView(scan: ScanResult, screenshot: boolean): ScanView {
     best: bestAt >= 0 ? choices[bestAt] : null,
     priceCache: scan.priceCache,
     error: scan.error,
+    stage: scan.stage,
+    notice: scan.notice,
   };
 }
 
@@ -780,10 +782,7 @@ async function handler(
 
     if (path === "/api/logs") return apiLogs();
     if (path === "/api/logs/events") {
-      return logEventsResponse(req, {
-        "debug.log": { path: DEBUG_LOG, kind: "file" },
-        ocr_runs: { path: RUNS_DIR, kind: "dir" },
-      });
+      return logEventsResponse(req, dashboardSources(APP_DIR));
     }
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();

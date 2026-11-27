@@ -397,6 +397,10 @@ export interface ScanView {
     entries: number;
   };
   error: string | null;
+  /** "fast" while a watch scan's fast record is newest; "deep", "single". */
+  stage?: string | null;
+  /** A note on top of the record ("Last scan found nothing at 14:32"). */
+  notice?: string | null;
 }
 
 export interface ScanPageState {
@@ -525,7 +529,21 @@ ${rows}
 </figure>`
     : "";
 
-  return `${verdict}
+  // A watch scan publishes a fast record first; the deep record replaces it.
+  const stageLine = scan.stage === "fast"
+    ? `<p class="govuk-body wf-scan-stage">${
+      tag("Fast result", "yellow")
+    } refining…</p>`
+    : "";
+  const noticeBlock = !scan.notice
+    ? ""
+    : `<div class="govuk-inset-text wf-scan-notice">
+  <p class="govuk-body wf-!-no-margin-bottom">${escapeHtml(scan.notice)}</p>
+</div>`;
+
+  return `${noticeBlock}
+${stageLine}
+${verdict}
 ${errorBlock}
 <dl class="govuk-summary-list wf-detail-list">
 ${scanSummaryRow("Scan time", timeTag(scan.startedMs, "unknown time"))}
