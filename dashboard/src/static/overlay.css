@@ -1,0 +1,266 @@
+/* Warframe Info scan overlay (/overlay) — bespoke styles, prefix wf-ov.
+   A dark, high-contrast page for a small pinned in-game browser window
+   (about 300–500 px wide). GOV.UK palette: black #0b0c0c, white, yellow
+   #ffdd00 (the best pick), red #d4351c (errors), green #00703c. */
+
+html.wf-ov-html,
+.wf-ov {
+  background: #0b0c0c;
+  color: #ffffff;
+}
+
+.wf-ov {
+  margin: 0;
+  font-family: "GDS Transport", Arial, sans-serif;
+  /* Scales with the window: 15 px at 300 px wide, 20 px from 470 px. */
+  font-size: clamp(15px, 4.3vw, 20px);
+  line-height: 1.25;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wf-ov__main {
+  padding: 8px 10px 10px;
+}
+
+/* Top bar: Scan button, status, live indicator ----------------------- */
+
+.wf-ov__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  min-height: 2em;
+}
+
+.wf-ov .wf-ov__scan {
+  margin: 0;
+  padding: 4px 14px 3px;
+  font-family: inherit;
+  font-size: 0.9em;
+  font-weight: 400;
+  line-height: 1.25;
+  color: #ffffff;
+  background: #00703c;
+  border: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: 0 2px 0 #002d18;
+  cursor: pointer;
+}
+
+.wf-ov .wf-ov__scan:hover {
+  background: #005a30;
+}
+
+.wf-ov .wf-ov__scan:focus {
+  outline: 3px solid #ffdd00;
+  outline-offset: 0;
+}
+
+.wf-ov .wf-ov__scan[disabled] {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+/* Screen-reader-only text; the same rule as govuk-visually-hidden, so the
+   page reads right without the GOV.UK stylesheet. */
+.wf-ov__sr {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.wf-ov__status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.8em;
+  color: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.wf-ov__status[data-kind="running"] {
+  color: #ffdd00;
+}
+
+.wf-ov__status[data-kind="error"] {
+  color: #ff9d8c;
+  font-weight: 700;
+}
+
+.wf-ov__live {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 0.7em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #b1b4b6;
+}
+
+.wf-ov__live::before {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.35em;
+  border-radius: 50%;
+  background: #6f777b;
+  vertical-align: -0.05em;
+}
+
+.wf-ov__live[data-state="live"]::before {
+  background: #00b85c;
+}
+
+.wf-ov__live[data-state="poll"]::before {
+  background: #ffdd00;
+}
+
+.wf-ov__live[data-state="off"]::before {
+  background: #d4351c;
+}
+
+/* Scan time ---------------------------------------------------------- */
+
+.wf-ov__meta {
+  margin: 0 0 6px;
+  font-size: 0.85em;
+  color: #ffffff;
+}
+
+.wf-ov__time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-ov__age {
+  color: #b1b4b6;
+}
+
+/* Reward choices ----------------------------------------------------- */
+
+.wf-ov__table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.wf-ov__head {
+  padding: 0 6px 3px;
+  font-size: 0.7em;
+  font-weight: 700;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #b1b4b6;
+}
+
+/* The header text is 0.7em, so 5.4em here is about 3.8em of body text:
+   room for "Ducats" and for three-digit values. */
+.wf-ov__head--num {
+  width: 5.4em;
+  text-align: right;
+}
+
+.wf-ov__row > th,
+.wf-ov__row > td {
+  padding: 6px;
+  border-top: 2px solid #505a5f;
+  vertical-align: middle;
+}
+
+.wf-ov__part {
+  text-align: left;
+  font-weight: 700;
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
+}
+
+.wf-ov__part-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.wf-ov__num {
+  text-align: right;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wf-ov__num--plat {
+  font-size: 1.6em;
+  line-height: 1;
+}
+
+.wf-ov__num--ducats {
+  font-size: 1.25em;
+  line-height: 1;
+  color: #dddddd;
+}
+
+/* The best pick: yellow band, black text — the strongest contrast here. */
+.wf-ov__row--best > th,
+.wf-ov__row--best > td {
+  background: #ffdd00;
+  color: #0b0c0c;
+  border-top-color: #ffdd00;
+}
+
+.wf-ov__best {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 6px;
+  font-size: 0.7em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: #0b0c0c;
+  color: #ffdd00;
+}
+
+.wf-ov__hint {
+  margin: 6px 0 0;
+  font-size: 0.8em;
+  color: #b1b4b6;
+}
+
+/* Empty and error states --------------------------------------------- */
+
+.wf-ov__notice {
+  padding: 8px 10px;
+  border-left: 6px solid #b1b4b6;
+  background: #1d2021;
+  margin-bottom: 6px;
+}
+
+.wf-ov__notice--error {
+  border-left-color: #d4351c;
+  background: #2b0f0a;
+}
+
+.wf-ov__notice-title {
+  margin: 0 0 4px;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+.wf-ov__notice-text {
+  margin: 0;
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.wf-ov__code {
+  font-family: inherit;
+  color: #b1b4b6;
+}

@@ -12,6 +12,7 @@ Digital Extremes, WFCD, or warframe.market.
 | `/logs` | Live tail of `debug.log` (newest first, filter box, auto-refresh) |
 | `/recent` | Recently seen prime parts: reward screens parsed from `debug.log` and OCR test-suite results from `ocr_runs/` |
 | `/scan` | Newest OCR reward-screen scan: which part to take for the best platinum return, every priced choice, and the captured screenshot |
+| `/overlay` | Compact live view of the newest scan for a small in-game window: each part with plat and ducats, the best pick in yellow, and a Scan button |
 | `/wfmarket` | Cached prime-part prices (plat, volume, ducats) with search and sort; select a part for live 90-day statistics |
 
 ## Quick start
@@ -115,6 +116,25 @@ cross-site post) and, by default, only from the host that serves the page.
 The display and window lists show window titles, so by default only that host
 gets them too; another host sees empty lists and a note. Do not expose the dashboard to an untrusted network with `WFINFO_SCAN_REMOTE=1`.
 
+## In-game overlay
+
+Open <http://localhost:8000/overlay> in a small browser window over the game,
+for example a pinned page in the Steam overlay browser. The page:
+
+- shows only the newest scan: each part with its platinum and ducat values,
+  the best pick in a yellow band, and the scan time and age;
+- has no header or footer, and fits 4 parts without scrolling from 300 px
+  wide;
+- updates without a reload. The server pushes each new scan record over
+  server-sent events (`/api/scan/events`), normally well within 1 s. If the
+  stream fails, the page polls `/api/scan?view=overlay` every second. The
+  label at the top right shows `Live`, `Polling` or `Offline`;
+- has a **Scan** button that runs the same scan as **Scan now** on `/scan`.
+
+To capture one display or window from the overlay button, copy the choice
+token into the URL, for example `/overlay?display=display:DP-2`. Without one,
+the scanner tries every output.
+
 ## Checks
 
 ```bash
@@ -133,4 +153,5 @@ offline use, point `WFINFO_GOVUK_DIR` at an unpacked `govuk-frontend` dist.
 
 - `src/main.ts` — server and routing.
 - `src/lib/` — data parsing, GOV.UK asset mirror, live statistics, templates.
-- `src/static/` — bespoke stylesheet, page script, and the logo asset.
+- `src/static/` — bespoke stylesheets, page scripts (`dashboard.js`,
+  `overlay.js`), and the logo asset.
