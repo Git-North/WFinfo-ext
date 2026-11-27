@@ -268,6 +268,39 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       assertEquals(targets.windows.length, 1);
       assertEquals(targets.windows[0].label.includes("Warframe"), true);
 
+      // The lists carry window titles: another host gets none of them, in
+      // the API and in the page, only a note that says why.
+      const remoteTargets = await handler(
+        new Request("http://localhost/api/scan/targets?refresh=1"),
+        otherHost,
+      );
+      assertEquals(remoteTargets.status, 200);
+      const withheld = await remoteTargets.json();
+      assertEquals(withheld.displays, []);
+      assertEquals(withheld.windows, []);
+      assertStringIncludes(withheld.notes[0], "192.168.1.50 is another host");
+      const remotePage = await (await handler(
+        new Request("http://localhost/scan"),
+        otherHost,
+      )).text();
+      assertEquals(remotePage.includes("Warframe ("), false);
+      assertEquals(remotePage.includes("steam_app_230410"), false);
+      assertEquals(remotePage.includes('value="window:7"'), false);
+      assertStringIncludes(remotePage, "WFINFO_SCAN_REMOTE=1");
+
+      // The loopback client gets the titles.
+      const localTargets = await (await handler(
+        new Request("http://localhost/api/scan/targets"),
+        loopback,
+      )).json();
+      assertEquals(localTargets.windows.length, 1);
+      assertStringIncludes(localTargets.windows[0].label, "Warframe");
+      const localPage = await (await handler(
+        new Request("http://localhost/scan"),
+        loopback,
+      )).text();
+      assertStringIncludes(localPage, 'value="window:7"');
+
       // A chosen window is resolved to its current frame and passed on.
       const byWindow = await handler(
         new Request("http://localhost/scan/run", {
