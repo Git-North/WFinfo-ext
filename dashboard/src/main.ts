@@ -5,6 +5,9 @@
  *   /logs       — live tail of debug.log
  *   /recent     — reward screens from debug.log + OCR test-suite results
  *   /scan       — newest OCR reward-screen scan and which part to take
+ *   /overlay    — compact live view of the newest scan, for an in-game browser
+ *   /api/scan/events — server-sent events: the overlay body on every change
+ *                  of scans/latest.json
  *   POST /scan/run — start a scan and answer with the outcome
  *   /wfmarket   — cached prime-part prices, with live 90-day statistics per item
  *
@@ -67,6 +70,13 @@ import {
   wfmarketPageHtml,
 } from "./lib/view.ts";
 import { parseScanResult, resolveBest, type ScanResult } from "./lib/scan.ts";
+import { FileWatch } from "./lib/filewatch.ts";
+import {
+  overlayBodyHtml,
+  type OverlayCapture,
+  overlayPageHtml,
+  type OverlayState,
+} from "./lib/overlay.ts";
 import { Scanner } from "./lib/scanner.ts";
 import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
 import {
@@ -526,10 +536,147 @@ function apiOcrRuns(): Response {
   return json({ runs });
 }
 
-function apiScan(): Response {
+function apiScan(url: URL): Response {
+  if (url.searchParams.get("view") === "overlay") {
+    return json(overlayPayload(readText(SCAN_FILE)));
+  }
   return json({
     updatedAt: fileMtime(SCAN_FILE) ?? Date.now(),
     body: scanBodyHtml(scanState()),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Overlay (/overlay, /api/scan/events)                                */
+/* ------------------------------------------------------------------ */
+
+/** One shared watcher for every open overlay; it runs only while one is open. */
+const scanWatch = new FileWatch({ path: SCAN_FILE });
+
+/** Interval of the SSE comment line that keeps idle connections open. */
+const SSE_PING_MS = 15_000;
+
+/** Overlay state from the scan record text (null: no record on disk). */
+function overlayState(text: string | null): OverlayState {
+  if (text === null) {
+    return { status: "none", scan: null, recordPath: SCAN_FILE };
+  }
+  let raw: unknown = null;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    raw = null;
+  }
+  const scan = parseScanResult(raw);
+  if (scan === null) {
+    return { status: "unreadable", scan: null, recordPath: SCAN_FILE };
+  }
+  return {
+    status: "scan",
+    scan: toScanView(scan, fileExists(SCAN_SHOT)),
+    recordPath: SCAN_FILE,
+  };
+}
+
+/**
+ * The message the overlay swaps in: rendered body plus a version stamp.
+ * `version` changes with the record text, so the page can skip a repeat.
+ */
+function overlayPayload(text: string | null): {
+  updatedAt: number;
+  version: string;
+  body: string;
+} {
+  return {
+    updatedAt: fileMtime(SCAN_FILE) ?? Date.now(),
+    version: text === null ? "none" : `${text.length}:${hashText(text)}`,
+    body: overlayBodyHtml(overlayState(text)),
+  };
+}
+
+/** FNV-1a over UTF-16 code units: a cheap change stamp, not a security hash. */
+function hashText(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/** Capture tokens from the overlay URL, forwarded as-is by the Scan button. */
+function overlayCapture(url: URL): OverlayCapture {
+  const token = (key: string): string =>
+    (url.searchParams.get(key) ?? "").trim().slice(0, 200);
+  return { display: token("display"), window: token("window") };
+}
+
+/**
+ * Server-sent events for the overlay. The stream opens with the current
+ * state, then sends one `scan` event per change of scans/latest.json (file
+ * watcher, polling fallback) and a comment line every 15 s. A closed tab
+ * cancels the stream, which ends the subscription.
+ */
+function apiScanEvents(req: Request): Response {
+  const encoder = new TextEncoder();
+  let cleanup = (): void => {};
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      let ping: ReturnType<typeof setInterval> | null = null;
+      let unsubscribe = (): void => {};
+
+      const send = (chunk: string): void => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          cleanup();
+        }
+      };
+      const sendScan = (text: string | null): void => {
+        const payload = overlayPayload(text);
+        send(
+          `event: scan\nid: ${payload.version}\ndata: ${
+            JSON.stringify(payload)
+          }\n\n`,
+        );
+      };
+
+      cleanup = () => {
+        if (closed) return;
+        closed = true;
+        unsubscribe();
+        if (ping !== null) clearInterval(ping);
+        req.signal.removeEventListener("abort", cleanup);
+        try {
+          controller.close();
+        } catch {
+          // The client already went away.
+        }
+      };
+
+      // Subscribe first: the baseline it returns is the state this client
+      // gets now, so a change in between is never lost.
+      const sub = scanWatch.subscribe(sendScan);
+      unsubscribe = sub.unsubscribe;
+      send("retry: 2000\n\n");
+      sendScan(sub.current);
+      ping = setInterval(() => send(": ping\n\n"), SSE_PING_MS);
+      req.signal.addEventListener("abort", cleanup);
+    },
+    cancel() {
+      cleanup();
+    },
+  });
+
+  return new Response(body, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+    },
   });
 }
 
@@ -752,6 +899,15 @@ async function handler(
       );
     }
 
+    if (path === "/overlay") {
+      return html(
+        overlayPageHtml(
+          overlayState(readText(SCAN_FILE)),
+          overlayCapture(url),
+        ),
+      );
+    }
+
     if (path === "/scan/screenshot") {
       // Only the fixed screenshot path is ever served: the route is an exact
       // match and the file name is a compile-time constant, so no request
@@ -787,7 +943,8 @@ async function handler(
     }
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();
-    if (path === "/api/scan") return apiScan();
+    if (path === "/api/scan") return apiScan(url);
+    if (path === "/api/scan/events") return apiScanEvents(req);
     if (path === "/api/scan/targets") return await apiScanTargets(url, info);
 
     if (path.startsWith("/govuk/")) {
