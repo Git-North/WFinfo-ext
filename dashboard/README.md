@@ -53,7 +53,8 @@ is then a start error.
 
 ## Data sources
 
-The dashboard reads WFInfo's local application data and never writes to it:
+The dashboard reads WFInfo's local application data. It writes one file only,
+`<data dir>/WFInfo/wfinfo-ext-settings.json` (the scan settings, see below):
 
 - `<data dir>/WFInfo/debug.log` — log tail and reward-screen events.
 - `<data dir>/WFInfo/ocr_runs/` — OCR suite results (written by the headless
@@ -88,6 +89,18 @@ Above the button, two lists pick what the scan captures:
   wins over the display. Window geometry comes from mango IPC (`mmsg get
   all-clients`); under another compositor the list stays empty and the display
   choice still works.
+
+Below the button, **Scan settings** has two switches. Both are off by default:
+
+- **Notify on automatic scans** — a desktop notification for each scan that
+  the EE.log watcher starts. Scans from this page and the hotkey never notify.
+- **Pin the overlay after a scan** — keep the overlay on screen after a scan
+  that found part names.
+
+A change is saved at once (`POST /settings`; without JavaScript, press **Save
+settings**). The file is `wfinfo-ext-settings.json` in the app dir,
+`{"version":1,"notifications":false,"overlayPin":false}`. The scanner reads it
+at each scan, so no restart is needed. `GET /api/settings` returns it.
 
 **Refresh lists** re-reads both lists, so a window that just opened (Warframe,
 for example) appears without a page reload. The choice is resolved when the

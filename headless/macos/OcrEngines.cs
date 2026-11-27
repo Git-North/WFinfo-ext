@@ -1,4 +1,5 @@
 using System;
+using WFInfo.Errors;
 
 namespace WFInfo.MacOS
 {
@@ -11,8 +12,10 @@ namespace WFInfo.MacOS
         /// <summary>
         /// Resolves a requested engine. Auto, the default, means Vision when the
         /// helper is built on macOS, else Tesseract. <c>WFINFO_OCR_ENGINE</c>
-        /// sets the default. Throws <see cref="ArgumentException"/> on bad input,
-        /// and on macOS when <c>WFINFO_MAC_HELPER</c> names a missing file.
+        /// sets the default. Throws <see cref="ArgumentException"/> on bad input
+        /// (and for vision off macOS); on macOS a <see cref="ScanFailure"/>
+        /// SYS-004 when <c>WFINFO_MAC_HELPER</c> names a missing file, and
+        /// SYS-001 for vision when the helper is not built.
         /// </summary>
         public static string Resolve(string requested)
         {
@@ -27,8 +30,10 @@ namespace WFInfo.MacOS
                     return MacHelper.Available ? "vision" : "tesseract";
                 case "vision":
                     MacHelper.CheckConfigured();
-                    if (!MacHelper.Available)
+                    if (!OperatingSystem.IsMacOS())
                         throw new ArgumentException("--ocr vision needs macOS and the wfinfo-mac helper (built with the project on macOS)");
+                    if (!MacHelper.Available)
+                        throw new ScanFailure("SYS-001", "--ocr vision needs the wfinfo-mac helper");
                     return "vision";
                 case "tesseract":
                     return "tesseract";

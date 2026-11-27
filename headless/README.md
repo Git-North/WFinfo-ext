@@ -224,6 +224,7 @@ nix run .#scan-watch -- --log /path/EE.log    # watch a specific log
 | `--log <path>` | EE.log to watch; default is the Steam/Proton prefix, else `$WFINFO_EE_LOG` |
 | `--wait <seconds>` | keep re-capturing until a part is recognised (default 10 in watch mode) |
 | `--cooldown <seconds>` | ignore further triggers for this long after a scan starts (default 5) |
+| `--two-pass` | macOS: fast pass, then deep pass on the same capture, for a manual scan |
 
 The engines, market sheet and price cache are built once at start-up, so a
 triggered scan is one capture plus the OCR — about a second with a warm price
@@ -231,8 +232,45 @@ cache.
 
 The game writes the trigger line *before* the reward panel is on screen, so a
 triggered scan re-captures every 400 ms until a part is recognised or `--wait`
-runs out. A capture that finds nothing yet writes no record, so the dashboard
-only shows scans whose names were read.
+runs out.
+
+On macOS a triggered scan has two passes. Both records have the same
+`ScanId` and `Trigger: "watch"`:
+
+1. **Fast** (`Stage: "fast"`): Vision fast mode (`rewards --fast`), no tiles,
+   one read at the EE.cfg UI scale, else at the scale the last deep pass
+   estimated, else over the wide range. The re-capture loop runs here. The
+   record is published at once when it has parts.
+2. **Deep** (`Stage: "deep"`): always, also when the fast pass found parts or
+   found nothing. The runner gives the same capture back to the helper
+   (`--file`): accurate mode, tiles, and the unknown-scale second pass. The
+   deep record replaces the fast one. When the deep pass reads fewer parts
+   than the fast pass, or fails, the deep record keeps the fast parts (a
+   failure also sets `Notice`).
+
+Only the selected capture becomes `last.png`. `--two-pass` runs the same two
+passes for a manual scan (also with `--file`, the test path). Measured on
+Apple silicon with a synthetic 1920x1080 screen (`--file`, warm helper): fast
+record about 170 ms after start, deep record about 410 ms (known UI scale) or
+740 ms (unknown); one manual accurate pass about 270 ms. The first accurate
+call of a new process can take some seconds more (Vision prepares its model).
+
+A watch scan posts a desktop notification only when
+`wfinfo-ext-settings.json` has `notifications: true` (default off; read at
+each trigger; `--no-notify` still wins). The deep record notifies again only
+when it reads other names than the fast record (`ScanNews.FoundNewNames`).
+Linux and `--ocr tesseract` scans have one pass (`Stage: "single"`).
+
+**Keep-last-good.** Manual scans (`Trigger: "manual"`, CLI, hotkey,
+dashboard) read once, accurate (`Stage: "single"`). A record without choices
+(nothing found, or a failure) does not replace a previous record with
+choices: `latest.json` keeps that record with a `Notice` ("Last scan found
+nothing at 14:32", "Last scan failed at 14:32: CAP-001 Shutter"), and
+`last.png` stays. Only the record file changes (same atomic rename). The empty
+or failed record still goes into `scan-<stamp>.json` with its `ErrorCode`.
+Without a previous good record the empty or failed record is published. A
+deep pass that also found nothing follows the same rule. A new good record
+has no `Notice`.
 
 The watch is event-based on every OS: a file watcher on the log's folder
 (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows),
@@ -242,6 +280,29 @@ example, the Linux inotify watch limit), the watch checks every 250 ms and
 tries the watcher again every 10 s. Measured delay from the log line to the
 trigger: about 28 ms on macOS (FSEvents) and 6–17 ms on Linux (inotify); the
 earlier 250 ms poll took about 208 ms on Linux.
+
+### WFInfo-ext settings
+
+`<app dir>/wfinfo-ext-settings.json` holds two switches, both off by default:
+`{"version":1,"notifications":false,"overlayPin":false}`. `notifications`
+turns on the desktop notification for scans that the EE.log watch starts;
+`overlayPin` pins the overlay after a watch scan finds new reward names (see
+"Overlay auto-pin" below). The dashboard's Scan page
+writes the file; the runner only reads it (`Scan/ExtSettings.cs`), at each scan
+start and each watch trigger, so a change applies without a restart. A missing
+file means all off. An unreadable or invalid file also means all off, plus the
+warning SET-001 (Scroll).
+
+### Overlay auto-pin
+
+With `overlayPin` on, the EE.log watch (`--watch`) pins the Millennium
+plugin's `browser` window when a scan publishes reward names that this reward
+screen has not pinned for yet; a scan with no new names sends nothing. When
+EE.log shows the screen ended ("MatchingService::EndSession" or "Relic timer
+closed", the lines WFInfo uses), the watch unpins it, but only if its own pin
+changed the window (a window you pinned stays pinned). It also unpins before it
+stops. A manual scan never pins, because nothing would unpin it. A failed call
+never fails a scan: it is printed, logged, and added to that scan's notice.
 
 ### Game access
 
@@ -346,8 +407,41 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   `0` when a theme is forced.
 - `Best`/`BestDucats` follow the Windows overlay ranking; the same entry carries
   `"Best": true`.
-- A scan with no reward screen on screen still writes a record with
-  `Choices: []` (`Error: null`); a capture or database failure sets `Error`.
+- A scan with no reward screen on screen still writes a history record with
+  `Choices: []`, `Error: null` and `ErrorCode: "SCN-001"` (Hollow); a capture
+  or database failure sets `Error`. `latest.json` follows the keep-last-good
+  rule (see Automatic scanning).
+- `ScanId` (`yyyyMMdd_HHmmssfff-pid`), `Stage` (`fast`, `deep`, `single`),
+  `Trigger` (`watch`, `manual`): see Automatic scanning.
+- `ErrorCode`, `ErrorName`, `ErrorAction`: the catalog entry
+  (`errors/catalog.json`) of `Error` or of SCN-001. A failure with no entry
+  gets a generated `GEN-` code and a crash report (`CrashReport`, a `~/` path).
+- `Notice`: a note on a kept record, or on a deep record that shows the fast
+  result; null otherwise.
+
+## Errors and crash reports
+
+Every failure has a code from `errors/catalog.json` (see `errors/AGENTS.md`).
+The runner prints it on stderr and exits 2:
+
+```text
+ERROR SYS-004 Keystone: Helper path is wrong — WFINFO_MAC_HELPER names a file that does not exist.
+  Detail: WFINFO_MAC_HELPER names a missing file: '/nonexistent'
+  What to do: Fix the path in WFINFO_MAC_HELPER, or unset it to use the helper next to the runner.
+```
+
+- A known failure prints the code only. An unexpected error gets a generated
+  code (`GEN-xxxxxx` plus a name, the same code for the same bug) and a crash
+  report: `<app dir>/crash-reports/crash-<yyyy-MM-dd_HH.mm.ss>-<component>.txt`.
+  The line names the report. The newest 20 reports are kept.
+- A report has no personal data: home paths are `~`, and e-mail addresses,
+  IP addresses and EE.log lines are removed.
+- `wfinfo-mac` prints `wfinfo-mac: [CAP-001] <message>` on stderr; the runner
+  reads the code back. Usage errors have no code.
+- The reward layout library answers `{"error": {"code": "LAY-001", "message": "..."}}`.
+- `WFINFO_FAULT=crash` (developer hook) makes the runner fail on purpose, to
+  check the crash report. Set `HOME` and `CFFIXED_USER_HOME` to a temp root
+  first, so the report does not go into the real app dir.
 
 ## Environment
 

@@ -7,7 +7,7 @@
   # plus dashboard/ — a Deno + GOV.UK Frontend web dashboard over the local
   # WFInfo application data (logs, OCR runs, market databases).
   #
-  #   nix develop            -> .NET 9 SDK, native tesseract/leptonica, Deno
+  #   nix develop            -> .NET 9 SDK, native tesseract/leptonica, Deno, Rust
   #   nix develop -c dotnet build headless/WFInfo.Headless.csproj
   #   nix develop -c dotnet run --project headless -- --selfcheck
   #   nix develop -c dotnet run --project headless -- --test tests/map.json out.json
@@ -73,9 +73,15 @@
         WFINFO_NATIVE_LIBS = "${tesseractNative pkgs}/lib";
       };
 
+      # What builds the Rust overlay plugin client (headless/native/overlay),
+      # which the runner's csproj compiles when cargo is on PATH. The C
+      # compiler is rustc's linker.
+      rustTools = pkgs: with pkgs; [ cargo rustc stdenv.cc ];
+
       # Binaries the scan path shells out to: capture (grim + output list),
-      # the notification (notify-send) and the SDK that builds the runner.
-      scanTools = pkgs: with pkgs; [ dotnet-sdk_9 grim wlr-randr libnotify ];
+      # the notification (notify-send) and the tools that build the runner.
+      scanTools = pkgs:
+        (with pkgs; [ dotnet-sdk_9 grim wlr-randr libnotify ]) ++ (rustTools pkgs);
 
       # Tools the dashboard itself runs to list what a scan can capture: the
       # outputs (wlr-randr) and window names (wlrctl). Window *geometry* comes
@@ -108,6 +114,10 @@
             wlr-randr
             wlrctl
             libnotify
+            cargo
+            rustc
+            clippy
+            rustfmt
           ];
 
           # .NET's runtime dlopens OpenSSL/ICU; libgdiplus needs its fonts.

@@ -35,6 +35,30 @@ namespace WFInfo.Scan
             "Pause countdown done",
         };
 
+        /// <summary>
+        /// Lines that mean the reward screen is over, the same two the Windows
+        /// log watcher keys on (WFInfo/Data.cs). Used to unpin the overlay.
+        /// </summary>
+        private static readonly string[] EndTriggers =
+        {
+            "MatchingService::EndSession",
+            "Relic timer closed",
+        };
+
+        /// <summary>The end phrase the line contains, or null (the same privacy rule as <see cref="MatchTrigger"/>).</summary>
+        public static string MatchRewardEnd(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return null;
+            foreach (string trigger in EndTriggers)
+            {
+                if (line.IndexOf(trigger, StringComparison.OrdinalIgnoreCase) >= 0) return trigger;
+            }
+            return null;
+        }
+
+        /// <summary>What the watch looks for: a reward-screen or a screen-end phrase, else null.</summary>
+        public static string MatchWatchLine(string line) => MatchTrigger(line) ?? MatchRewardEnd(line);
+
         /// <summary>True when the line announces a reward screen.</summary>
         public static bool IsRewardTrigger(string line) => MatchTrigger(line) != null;
 

@@ -1,0 +1,36 @@
+[package]
+name = "wfinfo-overlay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "WFInfo client for the Overlay Auto-Pin Millennium plugin: pin Steam overlay windows over its Unix socket (C ABI, JSON in and out)"
+
+[lib]
+name = "wfinfo_overlay"
+# cdylib: the library the .NET runner loads. rlib: what the tests in tests/ link.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# std has no connect timeout for Unix sockets and no Unix sockets on Windows.
+socket2 = "0.6"
+
+# MSG_NOSIGNAL: a send to a plugin that closed early must not raise SIGPIPE.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc = "0.2"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# The C ABI turns a panic into an error answer; that needs unwinding.
+panic = "unwind"

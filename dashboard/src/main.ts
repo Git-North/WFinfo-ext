@@ -9,6 +9,7 @@
  *   /api/scan/events — server-sent events: the overlay body on every change
  *                  of scans/latest.json
  *   POST /scan/run — start a scan and answer with the outcome
+ *   POST /settings — change a WFInfo-ext switch (wfinfo-ext-settings.json)
  *   /wfmarket   — cached prime-part prices, with live 90-day statistics per item
  *
  * Environment:
@@ -24,8 +25,9 @@
  *                        <checkout>#scan -- --no-notify; on macOS dotnet runs
  *                        the headless runner, prebuilt DLL else dotnet run)
  *   WFINFO_SCAN_ROOT     checkout the default command builds the runner from
- *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests from another host
- *                        and to show it the display and window lists
+ *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests and settings
+ *                        changes from another host, and to show it the
+ *                        display and window lists
  *   WFINFO_MAC_HELPER    macOS: wfinfo-mac path for the display/window lists
  *                        (default <checkout>/headless/bin/Debug/net9.0/wfinfo-mac)
  *
@@ -48,7 +50,7 @@ import {
   slugForName,
 } from "./lib/items.ts";
 import { extractRewardEvents, type RewardLogEvent } from "./lib/recent.ts";
-import { logEventsResponse } from "./lib/logwatch.ts";
+import { dashboardSources, logEventsResponse } from "./lib/logwatch.ts";
 import { govukAsset, warmGovuk } from "./lib/govuk.ts";
 import { fetchItemStats, type LiveStats } from "./lib/wfm.ts";
 import {
@@ -78,7 +80,9 @@ import {
   type OverlayState,
 } from "./lib/overlay.ts";
 import { Scanner } from "./lib/scanner.ts";
+import { generated } from "./lib/errors.ts";
 import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
+import { apiSettings, readSettings, settingsRoute } from "./lib/settings.ts";
 import {
   denoRunner,
   discoverTargets,
@@ -481,6 +485,10 @@ function toScanView(scan: ScanResult, screenshot: boolean): ScanView {
     best: bestAt >= 0 ? choices[bestAt] : null,
     priceCache: scan.priceCache,
     error: scan.error,
+    errorCode: scan.errorCode,
+    crashReport: scan.crashReport,
+    stage: scan.stage,
+    notice: scan.notice,
   };
 }
 
@@ -749,7 +757,10 @@ async function scanRun(
   // list takes time, and two requests that overlap there must not both start a
   // scan. The reservation is released when the run (or the failure) is done.
   if (scanner.busy || scanStarting) {
-    return json({ error: "A scan is already running." }, 409);
+    return json(
+      { error: "A scan is already running.", code: "SCN-002" },
+      409,
+    );
   }
   scanStarting = true;
 
@@ -780,6 +791,11 @@ async function scanRun(
       : outcome.status === "failed"
       ? `The scan command failed (exit code ${outcome.exitCode}).`
       : "The scan command could not be started.";
+    const code = outcome.status === "timeout"
+      ? "SCN-003"
+      : outcome.status === "ok" || outcome.status === "failed"
+      ? undefined
+      : "DSH-001";
 
     // The page script asks for JSON and refreshes the body itself; a plain
     // form post (no script) gets a redirect back to the page, or the failure
@@ -787,10 +803,10 @@ async function scanRun(
     if (!wantsJson(req)) {
       return outcome.status === "ok"
         ? redirect("/scan")
-        : html(errorPageHtml(`${message} ${outcome.output}`));
+        : html(errorPageHtml(`${message} ${outcome.output}`, code));
     }
     return json(
-      { ...outcome, ok: outcome.status === "ok", message },
+      { ...outcome, ok: outcome.status === "ok", message, code },
       outcome.status === "ok" ? 200 : 502,
     );
   } finally {
@@ -882,6 +898,14 @@ async function handler(
 
   try {
     if (path === "/scan/run") return await scanRun(req, info);
+    if (path === "/settings") {
+      return await settingsRoute(req, {
+        appDir: APP_DIR,
+        remoteAddr: info?.remoteAddr,
+        allowRemote: SCAN_REMOTE,
+        errorPage: errorPageHtml,
+      });
+    }
 
     if (req.method !== "GET") {
       return new Response("method not allowed", { status: 405 });
@@ -895,7 +919,11 @@ async function handler(
 
     if (path === "/scan") {
       return html(
-        scanPageHtml(scanState(), toOptions(await clientTargets(info))),
+        scanPageHtml(
+          scanState(),
+          toOptions(await clientTargets(info)),
+          await readSettings(APP_DIR),
+        ),
       );
     }
 
@@ -936,16 +964,14 @@ async function handler(
 
     if (path === "/api/logs") return apiLogs();
     if (path === "/api/logs/events") {
-      return logEventsResponse(req, {
-        "debug.log": { path: DEBUG_LOG, kind: "file" },
-        ocr_runs: { path: RUNS_DIR, kind: "dir" },
-      });
+      return logEventsResponse(req, dashboardSources(APP_DIR));
     }
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();
     if (path === "/api/scan") return apiScan(url);
     if (path === "/api/scan/events") return apiScanEvents(req);
     if (path === "/api/scan/targets") return await apiScanTargets(url, info);
+    if (path === "/api/settings") return await apiSettings(APP_DIR);
 
     if (path.startsWith("/govuk/")) {
       const asset = await govukAsset(path);
@@ -969,7 +995,15 @@ async function handler(
     console.error(
       `request failed: ${path} — ${err instanceof Error ? err.message : err}`,
     );
-    return html(errorPageHtml("The server could not complete the request."));
+    const failure = generated(
+      `${err instanceof Error ? err.name : typeof err}|dashboard.handler`,
+    );
+    return html(
+      errorPageHtml(
+        `The server could not complete the request (${failure.code}).`,
+        failure,
+      ),
+    );
   }
 }
 

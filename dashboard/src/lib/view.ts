@@ -5,12 +5,18 @@
  * footer. Bespoke styles live in /assets/app.css and are prefixed `wf-`.
  */
 
+import { errorBlockHtml, type ErrorEntry } from "./errors.ts";
 import { escapeHtml } from "./html.ts";
 import type { CatalogItem } from "./items.ts";
 import { wfmItemUrl } from "./items.ts";
 import type { LiveStats } from "./wfm.ts";
 import { priceChartSvg } from "./charts.ts";
 import type { ScanTargetOptions, TargetOption } from "./targets.ts";
+import {
+  DEFAULT_SETTINGS,
+  SETTINGS_FILE,
+  type SettingsRead,
+} from "./settings.ts";
 
 export type NavKey = "logs" | "recent" | "scan" | "wfmarket";
 
@@ -397,6 +403,14 @@ export interface ScanView {
     entries: number;
   };
   error: string | null;
+  /** Catalog code of `error` (errors/catalog.json); null or absent when none. */
+  errorCode?: string | null;
+  /** Crash report of the scan (~/-relative path); null or absent when none. */
+  crashReport?: string | null;
+  /** "fast" while a watch scan's fast record is newest; "deep", "single". */
+  stage?: string | null;
+  /** A note on top of the record ("Last scan found nothing at 14:32"). */
+  notice?: string | null;
 }
 
 export interface ScanPageState {
@@ -459,11 +473,13 @@ export function scanBodyHtml(state: ScanPageState): string {
   const cacheValue =
     `${cache.hits} cached · ${cache.fetched} fetched · ${cache.failed} failed · ${cache.entries} entries`;
 
-  const errorBlock = scan.error === null ? "" : `<div class="govuk-inset-text">
-  <p class="govuk-body wf-err wf-!-no-margin-bottom">Scan error: ${
-    escapeHtml(scan.error)
-  }</p>
-</div>`;
+  const errorBlock = scan.error === null && !scan.errorCode
+    ? ""
+    : errorBlockHtml(
+      scan.errorCode,
+      scan.error,
+      scan.crashReport ?? null,
+    );
 
   const noChoices = scan.choices.length > 0
     ? ""
@@ -525,7 +541,21 @@ ${rows}
 </figure>`
     : "";
 
-  return `${verdict}
+  // A watch scan publishes a fast record first; the deep record replaces it.
+  const stageLine = scan.stage === "fast"
+    ? `<p class="govuk-body wf-scan-stage">${
+      tag("Fast result", "yellow")
+    } refining…</p>`
+    : "";
+  const noticeBlock = !scan.notice
+    ? ""
+    : `<div class="govuk-inset-text wf-scan-notice">
+  <p class="govuk-body wf-!-no-margin-bottom">${escapeHtml(scan.notice)}</p>
+</div>`;
+
+  return `${noticeBlock}
+${stageLine}
+${verdict}
 ${errorBlock}
 <dl class="govuk-summary-list wf-detail-list">
 ${scanSummaryRow("Scan time", timeTag(scan.startedMs, "unknown time"))}
@@ -541,6 +571,11 @@ ${noChoices}`;
 export function scanPageHtml(
   state: ScanPageState,
   targets: ScanTargetOptions,
+  settings: SettingsRead = {
+    settings: { ...DEFAULT_SETTINGS },
+    warning: null,
+    detail: null,
+  },
 ): string {
   const targetOptions = (options: TargetOption[], fallback: string): string =>
     [`<option value="">${escapeHtml(fallback)}</option>`]
@@ -599,6 +634,7 @@ ${notes}
   Warframe reward screen visible on the captured monitor. A scan takes a few
   seconds.</p>
 </form>
+${settingsFormHtml(settings)}
 <p id="wf-scan-status" class="govuk-body wf-muted" role="status" aria-live="polite" hidden></p>
 <pre id="wf-scan-log" class="wf-scan-log" hidden></pre>
 <div id="wf-scan-body">
@@ -609,6 +645,77 @@ ${scanBodyHtml(state)}
   } ·
 refreshes automatically while visible.</p>`;
   return shell("Scan", "scan", content);
+}
+
+/**
+ * The WFInfo-ext switches (wfinfo-ext-settings.json). A plain form post sets
+ * both switches and returns to /scan; dashboard.js saves each change with
+ * fetch instead and hides the button.
+ */
+export function settingsFormHtml(read: SettingsRead): string {
+  const box = (
+    key: "notifications" | "overlayPin",
+    label: string,
+    hint: string,
+  ): string => {
+    const id = `wf-setting-${key}`;
+    return `      <div class="govuk-checkboxes__item">
+        <input class="govuk-checkboxes__input" id="${id}" name="${key}" type="checkbox" value="on"${
+      read.settings[key] ? " checked" : ""
+    } aria-describedby="${id}-hint">
+        <label class="govuk-label govuk-checkboxes__label" for="${id}">${
+      escapeHtml(label)
+    }</label>
+        <div id="${id}-hint" class="govuk-hint govuk-checkboxes__hint">${
+      escapeHtml(hint)
+    }</div>
+      </div>`;
+  };
+
+  const warning = read.warning === null ? "" : `<div class="govuk-warning-text">
+    <span class="govuk-warning-text__icon" aria-hidden="true">!</span>
+    <strong class="govuk-warning-text__text">
+      <span class="govuk-visually-hidden">Warning</span>
+      ${
+    escapeHtml(read.warning)
+  } Scroll: the settings file could not be used (${
+    escapeHtml(read.detail ?? "unknown reason")
+  }), so every switch is off. Save to write a new file.
+    </strong>
+  </div>`;
+
+  return `<form id="wf-settings-form" class="wf-settings-form govuk-!-margin-top-6" method="post" action="/settings">
+  <div class="govuk-form-group">
+    <fieldset class="govuk-fieldset" aria-describedby="wf-settings-hint">
+      <legend class="govuk-fieldset__legend govuk-fieldset__legend--m">
+        <h2 class="govuk-fieldset__heading">Scan settings</h2>
+      </legend>
+      <div id="wf-settings-hint" class="govuk-hint">Saved on this machine in
+      <code class="wf-code">${escapeHtml(SETTINGS_FILE)}</code>. Both are off
+      by default. The scanner reads them at each scan, so a change applies to
+      the next scan.</div>
+  ${warning}
+      <div class="govuk-checkboxes govuk-checkboxes--small" data-module="govuk-checkboxes">
+${
+    box(
+      "notifications",
+      "Notify on automatic scans",
+      "Show a desktop notification when the EE.log watcher scans a reward screen. Scans from this page and the hotkey never notify.",
+    )
+  }
+${
+    box(
+      "overlayPin",
+      "Pin the overlay after a scan",
+      "Keep the overlay on screen after a scan that found part names.",
+    )
+  }
+      </div>
+    </fieldset>
+  </div>
+  <button id="wf-settings-save" class="govuk-button govuk-button--secondary" data-module="govuk-button" type="submit">Save settings</button>
+  <p id="wf-settings-status" class="govuk-body-s wf-muted" role="status" aria-live="polite" hidden></p>
+</form>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -812,10 +919,16 @@ export function notFoundPageHtml(): string {
   return shell("Page not found", "logs", content);
 }
 
-export function errorPageHtml(message: string): string {
+/** The failure page; with a catalog `code`, the error block follows the message. */
+export function errorPageHtml(
+  message: string,
+  code?: string | ErrorEntry,
+): string {
   const content = `
 <h1 class="govuk-heading-xl">Something went wrong</h1>
-<p class="govuk-body">${escapeHtml(message)}</p>
+<p class="govuk-body">${escapeHtml(message)}</p>${
+    code ? "\n" + errorBlockHtml(code, null) : ""
+  }
 <p class="govuk-body"><a class="govuk-link" href="/logs">Return to Logs</a>.</p>`;
   return shell("Something went wrong", "logs", content);
 }

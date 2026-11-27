@@ -6,7 +6,8 @@ publish = false
 description = "WFInfo macOS reward layout: Vision text lines in, reward slots out (C ABI, JSON in and out)"
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib: what the C# runner loads. rlib: what the integration tests in tests/ link.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

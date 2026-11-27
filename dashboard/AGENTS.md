@@ -18,8 +18,8 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   fmt/lint exclusions (AGENTS.md, README.md, `src/static`).
 - `src/main.ts` — HTTP server: routing (including `/scan`, `POST /scan/run`,
   `/api/scan` (`?view=overlay` for the overlay body), `/api/scan/targets`,
-  `/scan/screenshot`, `/overlay`, the `/api/scan/events` event stream and
-  `/api/logs/events`), env config (`PORT`,
+  `/scan/screenshot`, `/overlay`, the `/api/scan/events` event stream,
+  `/api/logs/events`, `POST /settings` and `/api/settings`), env config (`PORT`,
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
   `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`, `WFINFO_MAC_HELPER`), file
   reading, API endpoints.
@@ -35,9 +35,14 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
 - `src/lib/platform.ts` — per-OS defaults: the scan command (`nix run` on
   Linux; `dotnet` with the prebuilt runner DLL, else `dotnet run`, on macOS)
   and the `wfinfo-mac` path.
+- `src/lib/settings.ts` — `wfinfo-ext-settings.json`: read rules, the
+  atomic write, and the `POST /settings` / `GET /api/settings` routes.
 - `src/lib/fsdata.ts` — app-data dir resolution (mirrors headless
   `ConfigureEnvironment`), `debug.log` tail/parse helpers, OCR suite-result
   parsing.
+- `src/lib/errors.ts` — the error catalog (`errors/catalog.json`, a JSON
+  import): `lookup`, `generated` (GEN- codes, same rule as the runner) and
+  `errorBlockHtml(code, detail, crashReport)` (GOV.UK inset, escaped).
 - `src/lib/scan.ts` — scan-record parsing: `parseScanResult` for the
   `scans/latest.json` contract (`OcrEngine` is optional: old records have
   none), plus best-choice resolution with the contract
@@ -61,9 +66,9 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   changes (`Deno.watchFs` on its directory, polling fallback). Feeds
   `/api/scan/events`.
 - `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (log
-  events with a polling fallback, `/scan` polling, filter and the scan-button
-  submit, progressive enhancement), `overlay.css` + `overlay.js` (the overlay
-  page: styles, event stream with polling fallback, Scan button),
+  and scan events with a polling fallback, `/scan` polling, filter and the
+  scan-button submit, progressive enhancement), `overlay.css` + `overlay.js`
+  (the overlay page: styles, event stream with polling fallback, Scan button),
   `warframe-info-logo.webp` (brand asset).
 - `src/lib/*_test.ts` + `src/lib/testutil.ts` — offline unit tests.
 
@@ -78,6 +83,12 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   On macOS the app dir is always `~/Library/Application Support/WFInfo`
   (.NET ignores the override there), so tests that need a fake app dir set
   `HOME` too.
+- Error display: the scan body shows a record's error with
+  `errorBlockHtml` (code, name, title, description, what to do, crash
+  report). The dashboard's own failures carry a code in the JSON (`code`)
+  and the HTML error page: DSH-001 (scan command not started), SCN-002
+  (409, a scan is running), SCN-003 (timeout); the request catch-all shows
+  a generated GEN- code. Take codes only from `errors/catalog.json`.
 - Pages use GOV.UK Frontend classes only; bespoke styles are prefixed `wf-`.
 - All user/file-derived text is HTML-escaped before interpolation
   (`src/lib/html.ts`).
@@ -89,8 +100,23 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   `/scan/run` spawns `WFINFO_SCAN_CMD` (default: the flake's scan app at the
   checkout that holds `headless/`, `--no-notify`; on macOS `dotnet` runs that
   checkout's runner, see `src/lib/platform.ts`). The runner owns every file a
-  scan writes (`scans/`, `price_cache.json`); the dashboard itself still writes
-  nothing to the data dir.
+  scan writes (`scans/`, `price_cache.json`).
+- The dashboard writes one file in the data dir, and nothing else:
+  `<app dir>/wfinfo-ext-settings.json`, only through `POST /settings` in
+  `src/lib/settings.ts`. Why: the switches ("Notify on automatic scans", "Pin
+  the overlay after a scan", both off by default) must reach the runner, which
+  reads the file at each scan start and watch trigger, and the page is where
+  the user changes them. Format: `{"version":1,"notifications":false,
+  "overlayPin":false}`. Write a temporary file in the same folder, then
+  rename; never write in place. A failed write is SET-002 (Seal). Read rules
+  match `headless/Scan/ExtSettings.cs`: a missing file means all off; an
+  invalid one means all off plus SET-001 (Scroll); unknown keys are ignored.
+- `POST /settings` follows the `POST /scan/run` guard: same origin only, and
+  loopback only unless `WFINFO_SCAN_REMOTE=1`. A form post sets both switches
+  (an unchecked box is off) and gets `303` to `/scan`; a JSON body
+  (`{"notifications": true}`) sets the named switches; `Accept:
+  application/json` gets JSON. `GET /api/settings` returns the switches plus
+  `warning` (`SET-001` or null).
 - One scan at a time: a second request while a run is in flight is answered
   `409`, never queued — two runs would capture the screen twice and race on the
   scan record. A run past its deadline (180 s) is killed and reported as
@@ -144,7 +170,9 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   the one loopback check for the lists and for `POST /scan/run`. The server
   listens on all interfaces (`Deno.serve` without `hostname`).
 - Log views are event-driven: `GET /api/logs/events` sends `event: change`
-  with `{"source": "debug.log" | "ocr_runs"}` on each change, `event: ready`
+  with `{"source": "debug.log" | "ocr_runs" | "scan"}` on each change
+  (`dashboardSources` in `src/lib/logwatch.ts`; `scan` is
+  `scans/latest.json`), `event: ready`
   when the stream opens, and `: ping` every 25 s. `?source=` (repeatable)
   picks the sources; an unknown one gets `400`. The page then re-fetches its
   JSON endpoint (`/api/logs`, `/api/reward-events`, `/api/ocr-runs`); the
@@ -158,8 +186,10 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   while the tab is hidden. An open stream stays open while hidden.
 - Watching is read-only: stat, list and watch only. The dashboard reads
   WFInfo's own `debug.log`, never the game's `EE.log`.
-- `/scan` still polls `/api/scan` every 3 s. Follow-up: move it to the scan
-  file watcher (`filewatch.ts`, `/api/scan/events`) from the overlay branch.
+- `/scan` is live: it re-fetches `/api/scan` on each `scan` change (a watch
+  scan publishes a fast and a deep record, so two changes) and polls every
+  3 s only without events. The scan body shows the record's `Notice` and,
+  while a `Stage: "fast"` record is newest, "Fast result refining…".
 - Progressive enhancement: `dashboard.js` posts with `Accept: application/json`
   and renders the status and the command output. Without the script the form
   still works (302 back to `/scan`, or the error page).
@@ -187,7 +217,7 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   `ocr_runs/*.json` (headless `--test` persistence), `market_items.json` and
   `market_data.json` (cached market DBs), `scans/latest.json` and
   `scans/last.png` (headless `--scan` records and capture). The dashboard
-  never writes to the data dir.
+  writes only `wfinfo-ext-settings.json` (see Local Contracts).
 
 ## Verification
 

@@ -27,7 +27,7 @@ code type-checks without WPF/WinForms/Win32.
   `ScanWatcher.cs` (EE.log-driven automatic scanning), `PriceCache.cs` (local
   platinum cache with on-demand warframe.market refresh), `MarketSheet.cs`
   (indexes `market_items.json`/`market_data.json`), `Notifier.cs` (notify-send;
-  macOS: osascript),
+  macOS: osascript), `ExtSettings.cs` (reads `wfinfo-ext-settings.json`),
   `ScanModels.cs`/`ScanOptions.cs`/`Shell.cs`. The record shape is a contract
   with the dashboard's Scan page: the field list is in `README.md` (Scan) and
   the reader is `dashboard/src/lib/scan.ts` — change both together.
@@ -42,7 +42,7 @@ code type-checks without WPF/WinForms/Win32.
 - `--watch` scans automatically: `ScanWatcher` tails EE.log and runs a scan per
   "Got rewards" line. The game writes that line before the panel is on screen,
   so a triggered scan re-captures until a part is recognised (or `--wait`
-  expires) and writes no record for a screen it could not read. EE.log lives in
+  expires). EE.log lives in
   the Steam/Proton prefix (macOS: `~/Library/Application Support/Steam`
   compatdata, or a CrossOver bottle; the newest log wins); `--log`/
   `$WFINFO_EE_LOG` override the search. The watch is event-based on every OS
@@ -82,11 +82,21 @@ code type-checks without WPF/WinForms/Win32.
   `uiScaleMin`/`uiScaleMax`, `crop`, `lines[]` (`text`, `confidence`, `box`
   in full-image pixels with a top-left origin), `saved`, `ms`. Keep it stable
   when the Vision API changes.
+- `native/overlay/` — Rust crate `wfinfo-overlay` (all OSes): the client for
+  the Overlay Auto-Pin Millennium plugin (Git-North/steam-overlay-pin), which
+  pins Steam overlay windows. `OverlayPin.cs` is its .NET wrapper. See "Overlay
+  plugin client" under Local Contracts.
 - `Platform/` — seams ONLY: `HeadlessMain.cs` (stub `Main`), `HeadlessServices.cs`
   (window-info service, process finder, screenshot/log-capture stubs,
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
   `PlatformTypeShims.cs` (Point/Key/MouseButton/Screen/Clipboard),
   `BitmapPixInterop.cs` (Bitmap → Pix via lossless PNG round-trip).
+- `Errors/` — the error contract (codes from `errors/catalog.json`):
+  `ErrorCatalog.cs` (lookup, generated GEN- codes, `ScanFailure`),
+  `ErrorMapping.cs` (codes from helper text, any component's JSON error
+  object, missing native libraries), `ErrorConsole.cs` (the stderr line,
+  `Fail` for a mode), `CrashReport.cs` (crash reports), `Redact.cs` (the
+  personal-data scrub), `AssemblyInfo.cs` (internals for the dev tests).
 - `flake.nix` (repo root) owns the build environment, not this folder.
 
 ## Local Contracts
@@ -108,7 +118,7 @@ code type-checks without WPF/WinForms/Win32.
   "BLUEPRINT" under one card). With a known UI scale, `rewards` therefore also
   reads 7 narrow tiles over the strip (one per card position for 1-4 cards),
   drops tile lines cut by a tile edge, and merges duplicates (longer text
-  wins). Keep this; `headless/macos/tests/rewards_regression.sh` guards it.
+  wins). Keep this; `tests/swift/rewards_regression_test.ts` guards it.
 - On macOS the default `--selfcheck` proves the Vision stack only, not
   WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
@@ -168,7 +178,9 @@ code type-checks without WPF/WinForms/Win32.
   `uiScaleEstimated`, `slots[].candidates`, `notes`, … or `error`). The csproj
   target `BuildRustLayout` runs `cargo build --release --locked` on macOS
   only (output under `obj/rust-layout/`) and copies `libwfinfo_layout.dylib`
-  next to the runner; Linux and Windows builds need no Rust.
+  next to the runner; Linux and Windows builds need no Rust. It uses
+  `cargo rustc --crate-type cdylib`: the crate also lists `rlib` for its
+  tests, and cargo turns LTO off for a build that includes an rlib.
 - The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
   The OCR engine is chosen in `headless/`; use runtime checks
   (`OperatingSystem.IsMacOS()`), never `#if`.
@@ -181,11 +193,48 @@ code type-checks without WPF/WinForms/Win32.
   `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
   appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
   and SIP strips `DYLD_*` there).
+- Scan passes (macOS Vision; `ScanRunner`): a watch scan
+  (`RunWatchAsync`, `Trigger: "watch"`) runs a fast pass
+  (`VisionRewardScan.RunFast`: `rewards --fast`, which reads no tiles; one
+  read at the known or last estimated UI scale) with the re-capture loop and
+  publishes it (`Stage: "fast"`) when it has parts. Then ALWAYS a deep pass
+  on the same capture (`--file`, accurate, tiles, unknown-scale second pass),
+  published with the same `ScanId` (`Stage: "deep"`). The deep record never
+  shows fewer parts than the fast one. Manual scans (`Trigger: "manual"`)
+  read once, accurate (`Stage: "single"`), unless `--two-pass`. Linux and
+  `--ocr tesseract` read once.
+- Keep-last-good (`ScanPublisher`, every OS): a record without choices does
+  not replace a `latest.json` that has choices. That record stays with a
+  `Notice`, `last.png` stays, and the empty or failed record goes only into
+  the history (SCN-001 for nothing found). Keep `ScanPublisher.Decide` pure;
+  `tests/scan-flow/dotnet-passes` tests it.
+- Every caught scan failure sets `ErrorCode`/`ErrorName`/`ErrorAction` from
+  the catalog: a `ScanFailure` or a known leading code in the helper's error
+  text, the layout's `{"error":{"code",...}}` (a plain string is LAY-002),
+  DllNotFound → SYS-005; anything else gets `ErrorCatalog.ForException` and
+  `CrashReport.Write`. Bad options (`ArgumentException`) stay a fatal CLI
+  error.
+- Watch notifications follow `ExtSettings.Load().Notifications`, read at each
+  trigger (default off; `--no-notify` wins). Manual scans follow
+  `--no-notify` only.
+- Tests that run the runner set `HOME` and `CFFIXED_USER_HOME` (macOS; .NET
+  ignores `HOME` alone there) or `WFINFO_DATA_DIR` (Linux) to a temp root,
+  and refuse to run when the app dir is the real one.
 - `scans/last.png` and `scans/latest.json` are one pair: write both under
   per-process temporary names in `scans/` (`last.png.<pid>.tmp`,
   `latest.json.<pid>.tmp`), then rename the screenshot and the record last.
   Never write either file in place. Stale `.tmp` files (owner process gone,
   or older than 10 minutes) are deleted at the next scan start.
+- `ExtSettings` (`<app dir>/wfinfo-ext-settings.json`,
+  `{"version":1,"notifications":false,"overlayPin":false}`): the runner only
+  reads it, never writes it (the dashboard owns the write). Call
+  `ExtSettings.Load()` at each scan start and each watch trigger, never once
+  per process. `Load` never throws: a missing file gives the defaults (all
+  off); an unreadable or invalid file (not a JSON object, version not 1, a
+  switch not true/false) gives the defaults and `WarningCode` "SET-001";
+  record that code as a warning. Unknown keys are ignored. `Load(path)` is
+  for tests on a temp dir. The rules match `dashboard/src/lib/settings.ts`;
+  change both together.
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
@@ -200,6 +249,29 @@ code type-checks without WPF/WinForms/Win32.
   the Homebrew prefix) for the developer modes only.
 - `System.Drawing.Common` is pinned to 6.0.0: versions ≥ 7 throw
   PlatformNotSupportedException on Linux even with `EnableUnixSupport`.
+- Error contract (binding):
+  - Throw `ScanFailure(code, detail)` where the cause is known; the detail
+    holds no personal data. Never throw a bare exception for a known cause.
+  - A mode prints a failure with `ErrorConsole.Fail(ex, component)`:
+    `ERROR <code> <name>: <title> — <description> (crash report: <path>)`,
+    then `Detail:` and `What to do:`, exit 2. A catalog code gets no crash
+    report; anything else gets a GEN- code and a crash report. The top-level
+    guard in `Main` reports every escaped exception with a crash report.
+  - Catalog severity sets the word: `WARNING` for warning/info, else `ERROR`.
+    DAT-001/DAT-003 (market_items/name_data missing or unreadable) stop the
+    scan; DAT-002 (market_data) is a warning.
+  - `wfinfo-mac` failures print `wfinfo-mac: [<CODE>] <message>` (CAP-001..005,
+    OCR-001); `MacHelper` throws a `ScanFailure` with that code. Usage errors
+    have no code and stay an `InvalidOperationException`. `MacHelper` itself
+    throws SYS-001 (not built / cannot start), SYS-002 (timeout), SYS-003 (no
+    JSON), SYS-004 (bad `WFINFO_MAC_HELPER`).
+  - The layout library answers `{"error":{"code":"LAY-001"|"LAY-002","message":…}}`.
+    Read any component's error object with `ErrorMapping.FromJson`; it keeps
+    a well-formed code that the catalog does not list (e.g. PLG-).
+  - Crash reports go only to `<app dir>/crash-reports/` (newest 20). A test or
+    script that runs the runner sets `HOME` and `CFFIXED_USER_HOME` (Linux:
+    `WFINFO_DATA_DIR`) to a temp root and refuses the real app dir.
+    `WFINFO_FAULT=crash` is the developer hook for a forced crash.
 - Env vars honored by `Program.cs`:
   - `WFINFO_NATIVE_LIBS` — dir with tesseract/leptonica libs (flake sets it).
   - `WFINFO_DATA_DIR` — overrides the app-data root (tessdata + market DBs).
@@ -216,6 +288,53 @@ code type-checks without WPF/WinForms/Win32.
   app dir is `~/Library/Application Support/WFInfo`.
 - `RollForward=Major`: the runner targets net9.0 but runs on a newer runtime
   when 9 is absent (Homebrew ships only the newest .NET).
+
+
+### Overlay plugin client
+
+- One call = one connection to the plugin's socket: one JSON request line, one
+  JSON answer line. The reference is the plugin itself
+  (`backend/cli_socket.lua`, `frontend/remote.ts`); the socket path rule in
+  `src/socket_path.rs` MUST match it.
+- The client uses ONLY that socket. It never starts, stops or changes Steam or
+  the plugin, and never touches the game. No helper process or program sits
+  between WFInfo and the plugin.
+- C ABI: `wfinfo_overlay(const char* json) -> char*` and
+  `wfinfo_overlay_free(char*)`. The request and answer shapes are in
+  `src/lib.rs`. `timeoutMs` (default 10000) covers the whole call, retries
+  included; no path may block longer, and no panic may cross the ABI.
+- Refused connects are retried after 25, 50, 100, 200 and 400 ms. Do not use
+  socket2's `connect_timeout` for Unix sockets: it reads Linux's `EAGAIN` (full
+  backlog) as "in progress".
+- Errors: area `PLG` in `errors/catalog.json`. `src/codes.rs` maps each `Kind`
+  to its entry; `OverlayPin.cs` alone reports PLG-019 and PLG-020. A panic gets
+  a `GEN-` code from `panic|wfinfo_overlay::handle`. `tests/catalog.rs` fails
+  when the code and the catalog differ. A failure answer writes the home folder
+  as `~`; a success answer is the plugin's own.
+- The feature is off by default. The wrapper reads no setting: its caller
+  checks `overlayPin` in `wfinfo-ext-settings.json`.
+- `Scan/OverlayAutoPin.cs` is the only caller in the scan flow: watch scans
+  only, pin on `ScanNews.FoundNewNames` per reward screen, unpin on
+  `EeLog.MatchRewardEnd` and before the watch ends, only after a pin that
+  changed `browser`; calls run in order, off the scan's path; failures go to
+  `ReportOverlayFailure` (log + notice), never to the scan result.
+- `Pin`/`Unpin` block. A scan calls `RequestAsync` or accepts the wait. After a
+  pin, unpin only when `OverlayPinResult.Changed("browser")` was true: else the
+  user had pinned the browser. Do not unpin `all`, which also unpins the
+  windows the user pinned.
+- The csproj target `BuildRustOverlay` runs on every OS where `cargo` is on
+  PATH and copies the library next to the runner (cargo output under
+  `obj/rust-overlay/`). Without cargo the build succeeds and the wrapper answers
+  PLG-019. `-p:BuildOverlayClient=false` skips it. On Linux, Rust comes from the
+  flake (dev shell and scan apps), never from a system install. Windows is best
+  effort.
+- Dependencies: serde, serde_json, socket2 (std has no Unix-socket connect
+  timeout and no Windows Unix sockets), and libc on Linux (`MSG_NOSIGNAL`).
+  `Cargo.lock` and `rust-toolchain.toml` are committed.
+- Quality: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+  (pedantic) are clean; every `unsafe` has a `SAFETY` comment. Tests live in
+  `tests/` and talk to a fake plugin only, never to the real socket. The one
+  unit test in `src/ffi.rs` is the panic guard, which no request can reach.
 
 ## Work Guidance
 
@@ -262,8 +381,9 @@ code type-checks without WPF/WinForms/Win32.
 
 ## Verification
 
-- macOS: `headless/macos/tests/rewards_regression.sh` (dev only) — every case
-  PASS: synthetic reward screens whose name lines `rewards` must all return.
+- `deno run -A tests/run.ts` (repo root) — the fork's tests (see
+  `tests/AGENTS.md`). The `swift` suite holds the `rewards` regression:
+  synthetic reward screens whose name lines `rewards` must all return.
 
 - `nix develop -c dotnet build headless/WFInfo.Headless.csproj` — clean build.
 - `nix develop -c dotnet run --project headless -- --selfcheck` — PASS expected.
@@ -284,8 +404,11 @@ code type-checks without WPF/WinForms/Win32.
   output, `debug.log` or the scan record.
 - macOS: `dotnet run --project headless -- --selfcheck` (Vision) — PASS, and
   no libgdiplus in the loaded images (see the proof above).
-- macOS: `cd headless/macos/layout && cargo test` — the layout cases and the
-  parity fixtures PASS (offline, no capture).
+- `cd headless/macos/layout && cargo test` (macOS or Linux) — the layout cases
+  and the parity fixtures in `tests/` PASS (offline, no capture).
+- macOS and Linux (`nix develop`): in `headless/native/overlay`,
+  `cargo test --locked`, `cargo fmt --check` and
+  `cargo clippy --all-targets --locked -- -D warnings` — all clean.
 - macOS: `--scan --no-notify --file <synth png> --ui-scale unknown` — every
   synthetic name priced.
 - macOS: `headless/bin/Debug/net9.0/wfinfo-mac devices` lists the compute

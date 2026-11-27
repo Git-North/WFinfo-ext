@@ -44,9 +44,13 @@ namespace WFInfo.Scan
         private readonly ScanOptions _options;
         private readonly Func<Task<int>> _scan;
         private readonly TextWriter _out;
+        private readonly Action _screenEnded;
 
-        public ScanWatcher(string logPath, ScanOptions options, Func<Task<int>> scan, TextWriter output)
+        /// <param name="screenEnded">Called when EE.log shows the reward screen ended; may be null.</param>
+        public ScanWatcher(string logPath, ScanOptions options, Func<Task<int>> scan, TextWriter output,
+            Action screenEnded = null)
         {
+            _screenEnded = screenEnded;
             _logPath = logPath;
             _options = options;
             _scan = scan;
@@ -76,8 +80,14 @@ namespace WFInfo.Scan
                 while (!cancellation.IsCancellationRequested)
                 {
                     // Only trigger phrases come back: the rest of EE.log stays inside LogTail.
-                    foreach (string trigger in tail.ReadNewMatches(EeLog.MatchTrigger))
+                    foreach (string trigger in tail.ReadNewMatches(EeLog.MatchWatchLine))
                     {
+                        if (EeLog.MatchRewardEnd(trigger) != null)
+                        {
+                            _screenEnded?.Invoke();
+                            continue;
+                        }
+
                         TimeSpan sinceLast = DateTime.UtcNow - lastScanUtc;
                         if (sinceLast.TotalSeconds < _options.CooldownSeconds)
                         {

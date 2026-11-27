@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using WFInfo.Errors;
 using WFInfo.MacOS;
 using WFInfo.Services.WindowInfo;
 using WFInfo.Settings;
@@ -25,9 +26,6 @@ namespace WFInfo.Scan
         /// <summary>A reward screen parses at least two parts; stop hunting other outputs then.</summary>
         private const int PartsGoodEnough = 2;
 
-        /// <summary>Run files kept next to latest.json (mirrors the OCR-suite retention).</summary>
-        private const int RetentionFiles = 60;
-
         /// <summary>Pause between captures while a triggered scan waits for the panel.</summary>
         private const int CaptureRetryIntervalMs = 400;
 
@@ -37,12 +35,37 @@ namespace WFInfo.Scan
         private readonly PriceCache _cache;
         private readonly ApplicationSettings _settings;
         private readonly VisionRewardScan _visionLayout;
+        private readonly ScanPublisher _publisher = new ScanPublisher(ScanPaths.ScansDir);
         private int _captureCount;
 
         /// <param name="visionLayout">
         /// macOS Vision layout scan (no System.Drawing); null runs WFInfo's own
         /// extraction with Tesseract (Linux, or `--ocr tesseract`).
         /// </param>
+        /// <summary>Pins the overlay for new watch records; null (the default) sends nothing.</summary>
+        public OverlayAutoPin AutoPin { get; set; }
+
+        /// <summary>
+        /// Records an overlay call that failed. It never fails a scan: it goes to
+        /// the log and, for a pin, as a notice on the record that asked for it.
+        /// </summary>
+        public void ReportOverlayFailure(string command, OverlayPinResult result, ScanResult record)
+        {
+            ErrorInfo info = ErrorCatalog.Get(result.ErrorCode);
+            string head = $"Overlay {command} failed: {result.ErrorCode} {result.ErrorName}";
+            Console.Error.WriteLine("WARNING: " + head + (info == null ? string.Empty : $" — {info.Title}. {info.Action}"));
+            Main.AddLog(head);
+            if (record == null) return;
+            try
+            {
+                _publisher.AddNotice(record.ScanId, head);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Main.AddLog("Could not add the overlay notice: " + ex.Message);
+            }
+        }
+
         public ScanRunner(ScanOptions options, IWindowInfoService window, MarketSheet sheet, PriceCache cache, ApplicationSettings settings,
             VisionRewardScan visionLayout)
         {
@@ -54,20 +77,94 @@ namespace WFInfo.Scan
             _visionLayout = visionLayout;
         }
 
-        /// <summary>Runs the scan; returns 0 when a record was produced, 1 when capture/OCR failed.</summary>
-        public async Task<int> RunAsync()
+        /// <summary>
+        /// A manual scan (CLI, hotkey, dashboard): one accurate pass (Stage
+        /// "single"), or the fast and deep passes with `--two-pass`. Returns 0
+        /// when a record was produced, 1 when capture/OCR failed.
+        /// </summary>
+        public Task<int> RunAsync() =>
+            RunScanAsync(TriggerManual, twoPass: _options.TwoPass, notify: _options.Notify);
+
+        /// <summary>
+        /// An automatic scan (the EE.log trigger): on macOS a fast pass, then
+        /// always a deep pass on the same capture. WFInfo-ext's settings are
+        /// read at each trigger: they decide whether the scan posts a desktop
+        /// notification (default off; `--no-notify` still wins).
+        /// </summary>
+        public Task<int> RunWatchAsync()
+        {
+            ExtSettings settings = ExtSettings.Load();
+            return RunScanAsync(TriggerWatch, twoPass: true, notify: _options.Notify && settings.Notifications);
+        }
+
+        /// <summary>Record field Trigger of an EE.log-triggered scan.</summary>
+        public const string TriggerWatch = "watch";
+
+        /// <summary>Record field Trigger of a CLI, hotkey or dashboard scan.</summary>
+        public const string TriggerManual = "manual";
+
+        /// <summary>Record field Stage values.</summary>
+        public const string StageFast = "fast";
+        public const string StageDeep = "deep";
+        public const string StageSingle = "single";
+
+        private async Task<int> RunScanAsync(string trigger, bool twoPass, bool notify)
         {
             DateTime startedUtc = DateTime.UtcNow;
             var watch = Stopwatch.StartNew();
-            var result = new ScanResult
+            string scanId = startedUtc.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture) + "-" +
+                Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
+            // The fast and deep passes are a macOS Vision feature; WFInfo's own
+            // extraction (Linux, `--ocr tesseract`) reads once.
+            twoPass = twoPass && _visionLayout != null;
+            ScanResult NewRecord(string stage) => new ScanResult
             {
                 Version = 1,
                 StartedAt = ScanPaths.Iso(startedUtc),
                 CaptureSource = _options.File != null ? "file" : ScreenCapture.SourceName,
                 OcrEngine = _visionLayout != null ? "vision-layout" : "tesseract",
+                ScanId = scanId,
+                Stage = stage,
+                Trigger = trigger,
             };
 
+            try
+            {
+                Directory.CreateDirectory(ScanPaths.ScansDir);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"{ErrorCatalog.Get(ScansFolderCode)}: cannot create {ScanPaths.ScansDir}: {ex.Message}");
+                return 1;
+            }
+
+            _publisher.DeleteStalePending();
+
+            try
+            {
+                if (_visionLayout == null) return await RunWfInfoExtractionAsync(NewRecord(StageSingle), startedUtc, watch, notify).ConfigureAwait(false);
+                if (!twoPass) return await RunVisionSingleAsync(NewRecord(StageSingle), startedUtc, watch, notify).ConfigureAwait(false);
+                return await RunVisionPassesAsync(NewRecord, startedUtc, watch, notify).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!(ex is ArgumentException))
+            {
+                // An unexpected failure still leaves a record with a code (a
+                // generated one, with a crash report). Bad options (an
+                // ArgumentException) stay a fatal CLI error, as before.
+                ScanResult failed = NewRecord(twoPass ? StageDeep : StageSingle);
+                SetError(failed, ex.Message, null, ex);
+                return Complete(failed, watch, notify);
+            }
+        }
+
+        /// <summary>
+        /// WFInfo's own extraction (Linux, or `--ocr tesseract`): theme probe,
+        /// part boxes and Tesseract on each candidate, with the re-capture loop.
+        /// </summary>
+        private async Task<int> RunWfInfoExtractionAsync(ScanResult result, DateTime startedUtc, Stopwatch watch, bool notify)
+        {
             string lastError = null;
+            string lastErrorCode = null;
             Bitmap acceptedImage = null;
             string acceptedPath = null;
             byte[] acceptedPng = null;
@@ -76,20 +173,6 @@ namespace WFInfo.Scan
             var acceptedParts = new List<string>();
             string acceptedTheme = null;
             double acceptedThemeWeight = 0;
-
-            try
-            {
-                Directory.CreateDirectory(ScanPaths.ScansDir);
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Cannot create {ScanPaths.ScansDir}: {ex.Message}");
-                return 1;
-            }
-
-            DeleteStalePending();
-
-            if (_visionLayout != null) return await RunVisionLayoutAsync(result, startedUtc, watch).ConfigureAwait(false);
 
             // The game announces a reward screen before the panel is on screen
             // (the EE.log watcher keys on the announcement), so a triggered scan
@@ -107,6 +190,7 @@ namespace WFInfo.Scan
                         if (png == null)
                         {
                             lastError = captureError;
+                            lastErrorCode = CaptureFailedCode;
                             continue;
                         }
                     }
@@ -115,6 +199,7 @@ namespace WFInfo.Scan
                         if (!ScreenCapture.Capture(candidate.Output, candidate.Region, candidate.Path, out string captureError))
                         {
                             lastError = captureError;
+                            lastErrorCode = CaptureFailedCode;
                             continue;
                         }
                     }
@@ -126,6 +211,7 @@ namespace WFInfo.Scan
                     if (bitmap == null)
                     {
                         lastError = loadError;
+                        lastErrorCode = ScreenshotUnreadableCode;
                         if (candidate.Kind == "capture") TryDelete(candidate.Path);
                         continue;
                     }
@@ -164,7 +250,7 @@ namespace WFInfo.Scan
 
             if (acceptedImage == null)
             {
-                result.Error = lastError ?? "no screenshot could be captured or read";
+                SetError(result, lastError ?? "no screenshot could be captured or read", lastErrorCode ?? CaptureFailedCode, null);
             }
             else
             {
@@ -185,79 +271,171 @@ namespace WFInfo.Scan
             }
 
             CleanTempDirectory();
-            return Complete(result, watch);
+            return Complete(result, watch, notify);
         }
 
         /// <summary>
-        /// macOS scan without System.Drawing: each candidate (a file, a window,
-        /// or every display, main first) is one `wfinfo-mac rewards` call that
-        /// captures, crops the name rows and reads them with Vision; the layout
-        /// and WFInfo's name matching run on text and boxes only. The helper
-        /// writes each capture to the scans dir; the accepted one becomes
-        /// scans/last.png, the others are deleted. No temporary files.
+        /// One Vision pass over the candidates, with the re-capture loop: each
+        /// candidate (a file, a window, or every display, main first) is one
+        /// helper call through <paramref name="read"/>. The attempt with the
+        /// most parts wins; while nothing is found, the newest capture of the
+        /// first candidate that worked wins (the panel may appear late). Only
+        /// the winner keeps its capture; every other capture is deleted.
         /// </summary>
-        private async Task<int> RunVisionLayoutAsync(ScanResult result, DateTime startedUtc, Stopwatch watch)
+        private async Task<Selection> SelectAsync(DateTime deadline, Func<CaptureCandidate, string, VisionRewardScan.Attempt> read)
         {
-            string lastError = null;
-            VisionRewardScan.Attempt accepted = null;
-            string acceptedTarget = null;
-            string acceptedFile = null;
-
-            DateTime attemptDeadline = startedUtc.AddSeconds(_options.WaitSeconds);
+            var selection = new Selection();
+            int acceptedIndex = -1;
             while (true)
             {
-                foreach (CaptureCandidate candidate in BuildCandidates())
+                List<CaptureCandidate> candidates = BuildCandidates();
+                for (int index = 0; index < candidates.Count; index++)
                 {
+                    CaptureCandidate candidate = candidates[index];
                     string file = candidate.Kind == "file" ? candidate.Path : null;
 
-                    // Run deletes the capture of a failed or losing pass itself.
-                    VisionRewardScan.Attempt attempt = _visionLayout.Run(candidate.Output, candidate.Window, file, NextCapturePath);
+                    // The read deletes the capture of a failed or losing pass itself.
+                    VisionRewardScan.Attempt attempt = read(candidate, file);
                     if (attempt.Error != null)
                     {
-                        lastError = attempt.Error;
+                        selection.LastFailed = attempt;
                         continue;
                     }
 
-                    if (accepted == null || attempt.Parts.Count > accepted.Parts.Count)
+                    VisionRewardScan.Attempt accepted = selection.Accepted;
+                    bool better = accepted == null
+                        || attempt.Parts.Count > accepted.Parts.Count
+                        || (attempt.Parts.Count == 0 && accepted.Parts.Count == 0 && index == acceptedIndex);
+                    if (better)
                     {
                         if (accepted?.SavedPng != null) TryDelete(accepted.SavedPng);
-                        accepted = attempt;
-                        acceptedTarget = file ?? candidate.Label;
-                        acceptedFile = file;
+                        selection.Accepted = attempt;
+                        selection.Target = file ?? candidate.Label;
+                        selection.File = file;
+                        acceptedIndex = index;
                     }
                     else
                     {
                         TryDelete(attempt.SavedPng);
                     }
 
-                    if (accepted.Parts.Count >= PartsGoodEnough) break;
+                    if (selection.Accepted.Parts.Count >= PartsGoodEnough) break;
                 }
 
-                if (accepted != null && accepted.Parts.Count > 0) break;
-                if (DateTime.UtcNow >= attemptDeadline) break;
+                if (selection.Accepted != null && selection.Accepted.Parts.Count > 0) break;
+                if (DateTime.UtcNow >= deadline) break;
 
                 await Task.Delay(CaptureRetryIntervalMs).ConfigureAwait(false);
             }
+            return selection;
+        }
 
-            if (accepted == null)
+        /// <summary>
+        /// macOS manual scan without System.Drawing: one accurate pass (tiles,
+        /// and the unknown-scale second pass), as before the two-pass flow.
+        /// The helper writes each capture to the scans dir; the accepted one
+        /// becomes scans/last.png, the others are deleted. No temporary files.
+        /// </summary>
+        private async Task<int> RunVisionSingleAsync(ScanResult result, DateTime startedUtc, Stopwatch watch, bool notify)
+        {
+            Selection selection = await SelectAsync(
+                startedUtc.AddSeconds(_options.WaitSeconds),
+                (candidate, file) => _visionLayout.Run(candidate.Output, candidate.Window, file, NextCapturePath)).ConfigureAwait(false);
+
+            if (selection.Accepted == null)
             {
-                result.Error = lastError ?? "no screenshot could be captured or read";
+                SetError(result, selection.LastFailed);
             }
             else
             {
-                result.CaptureTarget = acceptedTarget;
-                result.ScreenshotWidth = accepted.Width;
-                result.ScreenshotHeight = accepted.Height;
-                result.UiScaling = accepted.UiScale;
-                result.Theme = null;
-                result.ThemeWeight = 0;
-                result.ScreenshotPath = acceptedFile != null
-                    ? StoreScreenshot(acceptedFile) ?? acceptedFile
-                    : MoveToScreenshot(accepted.SavedPng);
-                await PriceAsync(result, accepted.Parts).ConfigureAwait(false);
+                FillVision(result, selection, selection.Accepted);
+                result.ScreenshotPath = selection.File != null
+                    ? StoreScreenshot(selection.File) ?? selection.File
+                    : MoveToScreenshot(selection.Accepted.SavedPng);
+                await PriceAsync(result, selection.Accepted.Parts).ConfigureAwait(false);
             }
 
-            return Complete(result, watch);
+            return Complete(result, watch, notify);
+        }
+
+        /// <summary>
+        /// The automatic scan: a FAST pass (Vision fast mode, no tiles, one read
+        /// at the known or estimated UI scale) with the re-capture loop, then
+        /// always a DEEP pass (accurate mode, tiles, the unknown-scale second
+        /// pass) on the same capture, read back from its file. The fast record
+        /// is published at once when it has parts; the deep record, same
+        /// ScanId, replaces it. The deep record keeps the fast parts when the
+        /// deep pass reads fewer or fails. The deep record follows the
+        /// keep-last-good rule like a manual scan.
+        /// </summary>
+        private async Task<int> RunVisionPassesAsync(Func<string, ScanResult> newRecord, DateTime startedUtc, Stopwatch watch, bool notify)
+        {
+            Selection fast = await SelectAsync(
+                startedUtc.AddSeconds(_options.WaitSeconds),
+                (candidate, file) => _visionLayout.RunFast(candidate.Output, candidate.Window, file, NextCapturePath)).ConfigureAwait(false);
+
+            ScanResult fastRecord = null;
+            if (fast.Accepted != null && fast.Accepted.Parts.Count > 0)
+            {
+                fastRecord = newRecord(StageFast);
+                FillVision(fastRecord, fast, fast.Accepted);
+                // A copy: the capture stays for the deep pass.
+                fastRecord.ScreenshotPath = StoreScreenshot(fast.File ?? fast.Accepted.SavedPng);
+                await PriceAsync(fastRecord, fast.Accepted.Parts).ConfigureAwait(false);
+                Complete(fastRecord, watch, notify);
+            }
+
+            ScanResult deepRecord = newRecord(StageDeep);
+            string image = fast.File ?? fast.Accepted?.SavedPng;
+            if (image == null)
+            {
+                SetError(deepRecord, fast.LastFailed);
+                return Complete(deepRecord, watch, notify);
+            }
+
+            VisionRewardScan.Attempt deep = _visionLayout.Run(null, null, image, null);
+            VisionRewardScan.Attempt chosen = deep;
+            if (deep.Error != null && fast.Accepted.Parts.Count == 0)
+            {
+                // Nothing to fall back on: the deep failure is the result.
+                SetError(deepRecord, deep);
+                TryDelete(fast.Accepted.SavedPng);
+                return Complete(deepRecord, watch, notify);
+            }
+            if (deep.Error != null)
+            {
+                chosen = fast.Accepted;
+                ErrorInfo info = ErrorInfoFor(deep.ErrorCode, deep.Error, deep.Failure, out _);
+                deepRecord.Notice = $"Deep pass failed ({info.Code} {info.Name}); this is the fast result";
+                Main.AddLog("Deep pass failed: " + deep.Error);
+            }
+            else if (deep.Parts.Count < fast.Accepted.Parts.Count)
+            {
+                chosen = fast.Accepted;
+                Main.AddLog($"Deep pass read {deep.Parts.Count} parts, the fast pass {fast.Accepted.Parts.Count}; keeping the fast parts");
+            }
+
+            FillVision(deepRecord, fast, chosen);
+            deepRecord.ScreenshotPath = fast.File != null
+                ? StoreScreenshot(fast.File) ?? fast.File
+                : MoveToScreenshot(fast.Accepted.SavedPng);
+            await PriceAsync(deepRecord, chosen.Parts).ConfigureAwait(false);
+
+            // One notification per new answer: the deep record only notifies
+            // when it reads other names than the fast record did.
+            bool notifyDeep = notify && (fastRecord == null || ScanNews.FoundNewNames(fastRecord, deepRecord));
+            return Complete(deepRecord, watch, notifyDeep);
+        }
+
+        /// <summary>Copies the capture facts of a Vision attempt into a record.</summary>
+        private static void FillVision(ScanResult result, Selection selection, VisionRewardScan.Attempt attempt)
+        {
+            result.CaptureTarget = selection.Target;
+            result.ScreenshotWidth = attempt.Width;
+            result.ScreenshotHeight = attempt.Height;
+            result.UiScaling = attempt.UiScale;
+            result.Theme = null;
+            result.ThemeWeight = 0;
         }
 
         /// <summary>Prices the recognised parts, flags the best choice and saves the price cache.</summary>
@@ -275,20 +453,57 @@ namespace WFInfo.Scan
             SetRecommendations(result);
         }
 
-        /// <summary>Finishes the record: timing, persist, console summary, notification.</summary>
-        private int Complete(ScanResult result, Stopwatch watch)
+        /// <summary>Finishes the record: timing, publish, console summary, notification.</summary>
+        private int Complete(ScanResult result, Stopwatch watch, bool notify)
         {
             result.FinishedAt = ScanPaths.Iso(DateTime.UtcNow);
             result.DurationMs = watch.ElapsedMilliseconds;
 
-            Persist(result);
+            ScanResult published = Persist(result, out bool keptPrevious);
             Print(result);
+            if (keptPrevious) Console.WriteLine($"  kept:     the last good record ({published.Notice})");
+            if (published != null && !keptPrevious && result.Trigger == TriggerWatch) AutoPin?.OnPublished(published);
 
-            if (_options.Notify) SendNotification(result);
+            if (notify) SendNotification(result);
             if (_options.PrintJson) Console.WriteLine(JsonConvert.SerializeObject(result, Formatting.Indented));
 
             return result.Error == null ? 0 : 1;
         }
+
+        /// <summary>Sets Error and the catalog fields from a failed Vision attempt (null: nothing was captured).</summary>
+        private static void SetError(ScanResult result, VisionRewardScan.Attempt failed)
+        {
+            if (failed == null)
+                SetError(result, "no screenshot could be captured or read", CaptureFailedCode, null);
+            else
+                SetError(result, failed.Error, failed.ErrorCode, failed.Failure);
+        }
+
+        /// <summary>
+        /// Sets Error, ErrorCode, ErrorName and ErrorAction. A known catalog
+        /// code is used as is; anything else gets a generated GEN- code from
+        /// the exception and a crash report (its path goes in CrashReport).
+        /// </summary>
+        internal static void SetError(ScanResult result, string message, string code, Exception failure)
+        {
+            ErrorInfo info = ErrorInfoFor(code, message, failure, out Exception cause);
+            result.Error = message;
+            result.ErrorCode = info.Code;
+            result.ErrorName = info.Name;
+            result.ErrorAction = info.Action;
+            if (info.Generated) result.CrashReport = CrashReport.Write(cause, "scan", info);
+        }
+
+        private static ErrorInfo ErrorInfoFor(string code, string message, Exception failure, out Exception cause)
+        {
+            cause = failure ?? new InvalidOperationException(message);
+            return ErrorCatalog.Get(code) ?? ErrorCatalog.ForException(cause);
+        }
+
+        /// <summary>Catalog codes the runner sets itself (errors/catalog.json).</summary>
+        internal const string CaptureFailedCode = "CAP-004";
+        internal const string ScreenshotUnreadableCode = "CAP-005";
+        internal const string ScansFolderCode = "DAT-004";
 
         /// <summary>
         /// A new capture path for one helper call: scans/capture-&lt;pid&gt;-&lt;n&gt;.png.
@@ -304,12 +519,12 @@ namespace WFInfo.Scan
         /// The helper's capture becomes the pending screenshot (same directory, so
         /// a rename); <see cref="Persist"/> publishes it as scans/last.png.
         /// </summary>
-        private static string MoveToScreenshot(string savedPng)
+        private string MoveToScreenshot(string savedPng)
         {
             try
             {
                 if (string.IsNullOrEmpty(savedPng) || !File.Exists(savedPng)) return null;
-                File.Move(savedPng, PendingScreenshot, overwrite: true);
+                File.Move(savedPng, _publisher.PendingScreenshot, overwrite: true);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -556,7 +771,7 @@ namespace WFInfo.Scan
         }
 
         /// <summary>Keeps the OCR'd screenshot next to the scan records for the dashboard.</summary>
-        private static string StoreScreenshot(string sourcePath)
+        private string StoreScreenshot(string sourcePath)
         {
             try
             {
@@ -564,7 +779,7 @@ namespace WFInfo.Scan
                 if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(ScanPaths.ScreenshotPng), StringComparison.Ordinal))
                     return ScanPaths.ScreenshotPng;
 
-                File.Copy(sourcePath, PendingScreenshot, overwrite: true);
+                File.Copy(sourcePath, _publisher.PendingScreenshot, overwrite: true);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -575,11 +790,11 @@ namespace WFInfo.Scan
         }
 
         /// <summary>Writes an in-memory capture as the dashboard's scan screenshot.</summary>
-        private static string StorePng(byte[] png)
+        private string StorePng(byte[] png)
         {
             try
             {
-                File.WriteAllBytes(PendingScreenshot, png);
+                File.WriteAllBytes(_publisher.PendingScreenshot, png);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -590,102 +805,26 @@ namespace WFInfo.Scan
         }
 
         /// <summary>
-        /// This run's screenshot before it is published: inside scans/ (never
-        /// $TMPDIR), named per process, so a killed scan leaves only this file.
+        /// Publishes the record (see <see cref="ScanPublisher"/>: the atomic
+        /// last.png + latest.json pair, the history file, and the keep-last-good
+        /// rule). Returns the record latest.json now holds, or null when the
+        /// publish failed.
         /// </summary>
-        private static string PendingScreenshot =>
-            Path.Combine(ScanPaths.ScansDir, "last.png." + Environment.ProcessId + ".tmp");
-
-        private static string PendingRecord =>
-            Path.Combine(ScanPaths.ScansDir, "latest.json." + Environment.ProcessId + ".tmp");
-
-        /// <summary>
-        /// Writes latest.json plus one timestamped record, newest 60 kept.
-        ///
-        /// The screenshot and the record are published as a pair: both are first
-        /// written completely under per-process temporary names in scans/, then
-        /// renamed into place, the screenshot first and the record last. A scan
-        /// killed before the renames leaves the previous last.png/latest.json pair
-        /// untouched (only .tmp files, which a later run deletes), and latest.json
-        /// is never seen half-written.
-        /// </summary>
-        private static void Persist(ScanResult result)
+        private ScanResult Persist(ScanResult result, out bool keptPrevious)
         {
             try
             {
-                string json = JsonConvert.SerializeObject(result, Formatting.Indented);
-                File.WriteAllText(PendingRecord, json);
-                if (File.Exists(PendingScreenshot))
-                    File.Move(PendingScreenshot, ScanPaths.ScreenshotPng, overwrite: true);
-                File.Move(PendingRecord, ScanPaths.LatestScan, overwrite: true);
-
-                string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture);
-                File.WriteAllText(Path.Combine(ScanPaths.ScansDir, "scan-" + stamp + ".json"), json);
-
-                foreach (FileInfo old in new DirectoryInfo(ScanPaths.ScansDir).GetFiles("*.json")
-                    .OrderByDescending(f => f.LastWriteTimeUtc)
-                    .Skip(RetentionFiles))
-                {
-                    try { old.Delete(); } catch { /* keep going; the next scan retries */ }
-                }
-
+                ScanResult published = _publisher.Publish(result, DateTime.Now, out keptPrevious);
                 Main.AddLog("Scan persisted to: " + ScanPaths.ScansDir);
+                return published;
             }
             catch (Exception ex)
             {
                 Main.AddLog("Failed to persist the scan: " + ex.Message);
-                TryDelete(PendingRecord);
-                TryDelete(PendingScreenshot);
-            }
-        }
-
-        /// <summary>
-        /// Deletes pending files that a killed scan left behind: those whose
-        /// process is gone, and any older than ten minutes. A scan still running
-        /// in another process keeps its own.
-        /// </summary>
-        private static void DeleteStalePending()
-        {
-            try
-            {
-                DateTime cutoff = DateTime.UtcNow.AddMinutes(-10);
-                foreach (FileInfo pending in new DirectoryInfo(ScanPaths.ScansDir).GetFiles("*.tmp"))
-                {
-                    // last.png.<pid>.tmp / latest.json.<pid>.tmp
-                    string name = pending.Name;
-                    if (!name.StartsWith("last.png.", StringComparison.Ordinal) &&
-                        !name.StartsWith("latest.json.", StringComparison.Ordinal))
-                        continue;
-                    string[] parts = name.Split('.');
-                    bool ownerGone = parts.Length >= 4 &&
-                        int.TryParse(parts[parts.Length - 2], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) &&
-                        pid != Environment.ProcessId && !ProcessRunning(pid);
-                    if (ownerGone || pending.LastWriteTimeUtc < cutoff)
-                    {
-                        try { pending.Delete(); } catch { /* the next run retries */ }
-                    }
-                }
-            }
-            catch
-            {
-                // best-effort
-            }
-        }
-
-        private static bool ProcessRunning(int pid)
-        {
-            try
-            {
-                using (Process process = Process.GetProcessById(pid))
-                    return !process.HasExited;
-            }
-            catch (ArgumentException)
-            {
-                return false;
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
+                TryDelete(_publisher.PendingRecord);
+                TryDelete(_publisher.PendingScreenshot);
+                keptPrevious = false;
+                return null;
             }
         }
 
@@ -731,7 +870,9 @@ namespace WFInfo.Scan
 
         private static void Print(ScanResult result)
         {
-            Console.WriteLine("Warframe Info — reward screen scan");
+            Console.WriteLine(result.Stage == StageFast || result.Stage == StageDeep
+                ? $"Warframe Info — reward screen scan ({result.Stage} pass)"
+                : "Warframe Info — reward screen scan");
             Console.WriteLine($"  started:  {result.StartedAt} ({result.DurationMs} ms)");
 
             if (result.ScreenshotWidth > 0)
@@ -743,7 +884,8 @@ namespace WFInfo.Scan
 
             if (result.Choices.Count == 0)
             {
-                Console.WriteLine($"  no choices: {result.Error ?? "no reward screen detected"}");
+                Console.WriteLine($"  no choices: {result.Error ?? "no reward screen detected"}" +
+                    (result.ErrorCode == null ? string.Empty : $" [{result.ErrorCode} {result.ErrorName}]"));
             }
             else
             {
@@ -836,6 +978,19 @@ namespace WFInfo.Scan
             {
                 // best-effort
             }
+        }
+
+        /// <summary>The attempt a Vision pass kept, where it came from, and the last failure.</summary>
+        private sealed class Selection
+        {
+            public VisionRewardScan.Attempt Accepted { get; set; }
+            public string Target { get; set; }
+
+            /// <summary>The --file path when the candidate was a file, else null.</summary>
+            public string File { get; set; }
+
+            /// <summary>The newest failed attempt, or null.</summary>
+            public VisionRewardScan.Attempt LastFailed { get; set; }
         }
 
         private readonly struct CaptureCandidate

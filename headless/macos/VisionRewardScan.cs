@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using WFInfo.Errors;
 
 namespace WFInfo.MacOS
 {
@@ -50,10 +52,28 @@ namespace WFInfo.MacOS
         /// <summary>The configured UI scale, or null when the layout must estimate it.</summary>
         public double? ConfiguredUiScale => _uiScale;
 
+        /// <summary>
+        /// The UI scale the last accurate pass estimated (rounded to 0.05), or
+        /// null. With an unknown UI scale the fast pass of the next watch scan
+        /// reads at this scale.
+        /// </summary>
+        public double? LastEstimatedUiScale { get; private set; }
+
         public sealed class Attempt
         {
             public List<string> Parts { get; } = new List<string>();
             public string Error { get; set; }
+
+            /// <summary>
+            /// Catalog code of <see cref="Error"/>, or null when the failure has
+            /// no catalog entry (then <see cref="Failure"/> holds the exception
+            /// for a generated code and a crash report).
+            /// </summary>
+            public string ErrorCode { get; set; }
+
+            /// <summary>The exception behind <see cref="Error"/>, or null.</summary>
+            public Exception Failure { get; set; }
+
             public string Source { get; set; }
             public int Width { get; set; }
             public int Height { get; set; }
@@ -62,6 +82,26 @@ namespace WFInfo.MacOS
             /// <summary>Where the helper wrote the captured PNG (null for --file or on failure).</summary>
             public string SavedPng { get; set; }
             public long ElapsedMs { get; set; }
+
+            /// <summary>True for a fast pass (Vision fast mode, no tiles).</summary>
+            public bool Fast { get; set; }
+        }
+
+        /// <summary>
+        /// The fast pass of an automatic scan: one capture-and-read in Vision's
+        /// fast mode, without tiles, at the configured UI scale, else at the
+        /// last estimated one, else over the wide range (one read, no second
+        /// pass). Same capture-path rules as <see cref="Run"/>.
+        /// </summary>
+        public Attempt RunFast(string display, string window, string file, Func<string> nextSavePath)
+        {
+            var watch = Stopwatch.StartNew();
+            double? scale = _uiScale ?? LastEstimatedUiScale;
+            Attempt attempt = RunOnce(display, window, file, NextPath(file, nextSavePath), scale, fast: true);
+            attempt.Fast = true;
+            attempt.UiScaleEstimated = !_uiScale.HasValue;
+            attempt.ElapsedMs = watch.ElapsedMilliseconds;
+            return attempt;
         }
 
         /// <summary>
@@ -75,7 +115,7 @@ namespace WFInfo.MacOS
         public Attempt Run(string display, string window, string file, Func<string> nextSavePath)
         {
             var watch = Stopwatch.StartNew();
-            Attempt first = RunOnce(display, window, file, NextPath(file, nextSavePath), _uiScale);
+            Attempt first = RunOnce(display, window, file, NextPath(file, nextSavePath), _uiScale, fast: false);
             if (_uiScale.HasValue || first.Error != null)
             {
                 first.ElapsedMs = watch.ElapsedMilliseconds;
@@ -88,13 +128,14 @@ namespace WFInfo.MacOS
             // screens at 80 %), so read again with the exact crop for the
             // estimate and keep the pass that found more parts.
             double estimate = Math.Round(first.UiScale * 20) / 20;
-            Attempt second = RunOnce(display, window, file, NextPath(file, nextSavePath), estimate);
+            Attempt second = RunOnce(display, window, file, NextPath(file, nextSavePath), estimate, fast: false);
             Attempt best = second.Error == null && second.Parts.Count >= first.Parts.Count ? second : first;
             Attempt loser = ReferenceEquals(best, first) ? second : first;
             DeleteCapture(loser.SavedPng);
             loser.SavedPng = null;
             best.UiScaleEstimated = true;
             best.ElapsedMs = watch.ElapsedMilliseconds;
+            if (best.Error == null && best.UiScale > 0) LastEstimatedUiScale = Math.Round(best.UiScale * 20) / 20;
             return best;
         }
 
@@ -114,10 +155,11 @@ namespace WFInfo.MacOS
             }
         }
 
-        private Attempt RunOnce(string display, string window, string file, string savePath, double? uiScale)
+        private Attempt RunOnce(string display, string window, string file, string savePath, double? uiScale, bool fast)
         {
             var attempt = new Attempt();
             var arguments = new List<string> { "rewards" };
+            if (fast) arguments.Add("--fast");
             if (!string.IsNullOrEmpty(file))
             {
                 arguments.Add("--file");
@@ -169,6 +211,8 @@ namespace WFInfo.MacOS
             catch (InvalidOperationException ex)
             {
                 attempt.Error = ex.Message;
+                attempt.ErrorCode = HelperErrorCode(ex);
+                attempt.Failure = ex;
                 DeleteCapture(savePath); // the helper may have saved before it failed
                 return attempt;
             }
@@ -188,11 +232,15 @@ namespace WFInfo.MacOS
             {
                 attempt.Error = "reward layout library: " + ex.Message +
                     " (build headless/WFInfo.Headless.csproj on macOS; it builds headless/macos/layout with cargo)";
+                attempt.ErrorCode = ex is JsonException ? LayoutFailedCode : LayoutMissingCode;
+                attempt.Failure = ex;
                 return attempt;
             }
-            if (layout["error"] != null)
+            if (layout["error"] != null && layout["error"].Type != JTokenType.Null)
             {
-                attempt.Error = "reward layout: " + layout["error"];
+                (string code, string message) = LayoutError(layout["error"]);
+                attempt.Error = "reward layout: " + message;
+                attempt.ErrorCode = code;
                 return attempt;
             }
 
@@ -208,6 +256,51 @@ namespace WFInfo.MacOS
             }
 
             return attempt;
+        }
+
+        /// <summary>Catalog code: the layout library is not next to the runner.</summary>
+        internal const string LayoutMissingCode = "SYS-005";
+
+        /// <summary>Catalog code: the layout library returned an error.</summary>
+        internal const string LayoutFailedCode = "LAY-002";
+
+        private static readonly Regex LeadingCode = new Regex(
+            @"^\s*(?:wfinfo-mac:\s*)?\[?([A-Z]{3}-\d{3})(?![0-9])",
+            RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+        /// <summary>
+        /// The catalog code of a helper failure: a <see cref="ScanFailure"/>'s
+        /// code, else a known code at the start of the helper's error text
+        /// ("CAP-001 ...", "CAP-001: ..." or "[CAP-001] ..."), else null.
+        /// </summary>
+        internal static string HelperErrorCode(Exception error)
+        {
+            if (error is ScanFailure failure && ErrorCatalog.Get(failure.Code) != null) return failure.Code;
+            Match match;
+            try
+            {
+                match = LeadingCode.Match(error?.Message ?? string.Empty);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return null;
+            }
+            return match.Success && ErrorCatalog.Get(match.Groups[1].Value) != null ? match.Groups[1].Value : null;
+        }
+
+        /// <summary>
+        /// The layout library's error: {"code":"LAY-00x","message":...} or a
+        /// plain string (older builds). An unknown or missing code becomes LAY-002.
+        /// </summary>
+        internal static (string Code, string Message) LayoutError(JToken error)
+        {
+            if (error is JObject detail)
+            {
+                string code = detail["code"]?.Type == JTokenType.String ? detail["code"].ToString() : null;
+                string message = detail["message"]?.ToString() ?? detail.ToString(Formatting.None);
+                return (ErrorCatalog.Get(code) != null ? code : LayoutFailedCode, message);
+            }
+            return (LayoutFailedCode, error?.ToString() ?? string.Empty);
         }
 
         [DllImport("wfinfo_layout", EntryPoint = "wfinfo_layout")]

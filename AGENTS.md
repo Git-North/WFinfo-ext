@@ -52,7 +52,11 @@ and can start a reward-screen scan from its Scan page.
 - `dashboard/` — Deno + GOV.UK Frontend web dashboard over local WFInfo data
   (logs, OCR runs, market DBs), plus the browser-triggered scan button.
   Child: `dashboard/AGENTS.md`.
-- `tests/` — OCR/theme regression framework docs + scenario data. Child: `tests/AGENTS.md`.
+- `tests/` — the fork's tests (layout and the `tests/run.ts` entry point), plus
+  the OCR/theme regression framework docs and scenario data. Child: `tests/AGENTS.md`.
+- `errors/` — the shared error catalog (codes, names, generated-code rule,
+  crash-report layout) for the runner, helper, Rust libraries and dashboard.
+  Child: `errors/AGENTS.md`.
 - `docs/` — GitHub Pages website (has CNAME/index.html; do not drop engineering
   docs into it), owned at root.
 - `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows),
@@ -81,6 +85,8 @@ and can start a reward-screen scan from its Scan page.
   keep them short and operational.
 
 ## Verification (current)
+
+All fork tests: `deno run -A tests/run.ts` (see `tests/AGENTS.md`).
 
 Run inside `nix develop`:
 
@@ -155,5 +161,7 @@ Windows-equivalent (Path.Combine semantics) and compile-check them here.
   env vars, package pins.
 - `dashboard/AGENTS.md` — Deno dashboard: routes, data sources, offline-gate
   rules, GOV.UK styling conventions.
-- `tests/AGENTS.md` — OCR/theme regression framework: scenario contract,
-  data layout, known gaps.
+- `errors/AGENTS.md` — error catalog: format, code and name rules, generated
+  codes, crash reports, no personal data.
+- `tests/AGENTS.md` — test layout for fork code and coverage reports; OCR/theme
+  regression framework: scenario contract, data layout, known gaps.

@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using WFInfo.Errors;
 using WFInfo.Scan;
 
 namespace WFInfo.MacOS
@@ -35,7 +36,7 @@ namespace WFInfo.MacOS
         }
 
         /// <summary>
-        /// On macOS, throws <see cref="ArgumentException"/> when
+        /// On macOS, throws a <see cref="ScanFailure"/> SYS-004 when
         /// <c>WFINFO_MAC_HELPER</c> names a file that does not exist: a bad
         /// override is a configuration error, not "no helper".
         /// </summary>
@@ -44,8 +45,11 @@ namespace WFInfo.MacOS
             if (!OperatingSystem.IsMacOS()) return;
             string configured = Configured;
             if (configured != null && !File.Exists(configured))
-                throw new ArgumentException($"{Variable} names a missing file: '{configured}'. Fix the path or unset {Variable}.");
+                throw MissingConfigured(configured);
         }
+
+        private static ScanFailure MissingConfigured(string configured)
+            => new ScanFailure("SYS-004", $"{Variable} names a missing file: '{Redact.Path(configured)}'");
 
         /// <summary>Full path of the helper, or null when it is not built.</summary>
         public static string Path
@@ -63,7 +67,11 @@ namespace WFInfo.MacOS
 
         public static bool Available => OperatingSystem.IsMacOS() && Path != null;
 
-        /// <summary>Runs one subcommand and parses its JSON answer; throws with the helper's error text.</summary>
+        /// <summary>
+        /// Runs one subcommand and parses its JSON answer. Throws a
+        /// <see cref="ScanFailure"/> SYS-003 when the answer is not JSON; see
+        /// <see cref="RunBytes"/> for the other failures.
+        /// </summary>
         public static JToken Run(IEnumerable<string> arguments, int timeoutMs, byte[] input = null)
         {
             byte[] output = RunBytes(arguments, timeoutMs, input);
@@ -73,7 +81,7 @@ namespace WFInfo.MacOS
             }
             catch (JsonException ex)
             {
-                throw new InvalidOperationException($"{FileName} printed no JSON: {ex.Message}");
+                throw new ScanFailure("SYS-003", $"{FileName} printed no JSON: {ex.Message}", ex);
             }
         }
 
@@ -82,14 +90,19 @@ namespace WFInfo.MacOS
         /// (a PNG for `capture -`, JSON otherwise). Images go through the pipes,
         /// so nothing is written to a temporary folder. stdin is written while
         /// stdout and stderr are read, so a large image cannot block a full pipe.
+        /// Failures are <see cref="ScanFailure"/>s: SYS-004 (bad
+        /// WFINFO_MAC_HELPER), SYS-001 (not built or cannot start), SYS-002
+        /// (timeout), or the code the helper printed ("wfinfo-mac: [CAP-001] …").
+        /// A helper error without a code (a usage error) stays an
+        /// <see cref="InvalidOperationException"/> with the helper's text.
         /// </summary>
         public static byte[] RunBytes(IEnumerable<string> arguments, int timeoutMs, byte[] input = null)
         {
             string helper = Path;
             if (helper == null && Configured != null)
-                throw new InvalidOperationException($"{Variable} names a missing file: '{Configured}'");
+                throw MissingConfigured(Configured);
             if (helper == null)
-                throw new InvalidOperationException(
+                throw new ScanFailure("SYS-001",
                     $"{FileName} is not built; build headless/WFInfo.Headless.csproj on macOS (it compiles headless/macos/{FileName}.swift) or set {Variable}");
 
             var psi = new ProcessStartInfo(helper)
@@ -101,9 +114,18 @@ namespace WFInfo.MacOS
             };
             foreach (string argument in arguments) psi.ArgumentList.Add(argument);
 
-            using (var process = Process.Start(psi))
+            Process started;
+            try
             {
-                if (process == null) throw new InvalidOperationException("cannot start " + helper);
+                started = Process.Start(psi);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                throw new ScanFailure("SYS-001", $"cannot start {Redact.Path(helper)}: {ex.Message}", ex);
+            }
+            using (Process process = started)
+            {
+                if (process == null) throw new ScanFailure("SYS-001", "cannot start " + Redact.Path(helper));
 
                 var stdout = new MemoryStream();
                 Task copyOut = process.StandardOutput.BaseStream.CopyToAsync(stdout);
@@ -127,7 +149,7 @@ namespace WFInfo.MacOS
                 if (!process.WaitForExit(timeoutMs))
                 {
                     try { process.Kill(true); } catch { /* already gone */ }
-                    throw new InvalidOperationException($"{FileName} timed out after {timeoutMs} ms");
+                    throw new ScanFailure("SYS-002", $"{FileName} timed out after {timeoutMs} ms");
                 }
                 Task.WaitAll(copyOut, readErr, writeIn);
 
@@ -136,7 +158,8 @@ namespace WFInfo.MacOS
                     string message = string.IsNullOrWhiteSpace(readErr.Result)
                         ? $"{FileName} exited with {process.ExitCode}"
                         : readErr.Result.Trim();
-                    throw new InvalidOperationException(message.Replace(FileName + ": ", string.Empty));
+                    message = message.Replace(FileName + ": ", string.Empty);
+                    throw ErrorMapping.FromCodedText(message) ?? new InvalidOperationException(message);
                 }
                 return stdout.ToArray();
             }

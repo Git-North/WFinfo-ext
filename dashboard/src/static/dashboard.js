@@ -7,11 +7,16 @@
  *   /api/ocr-runs on an ocr_runs change, and re-render the two card lists.
  * - Fallback: without EventSource, or after 3 stream errors in a row, the
  *   Logs page polls every 3s and the Recently seen page every 10s.
- * - Scan page: re-fetch /api/scan every 3s and swap in the re-rendered body,
- *   so a hotkey-triggered scan appears without a reload. The page's "Scan now"
+ * - Scan page: re-fetch /api/scan on each "change" event for the scan
+ *   source (scans/latest.json; a watch scan publishes a fast and a deep
+ *   record) and swap in the re-rendered body, so every scan appears without a
+ *   reload. Fallback: re-fetch every 3s. The page's "Scan now"
  *   form posts to /scan/run with the chosen display or window; the script
  *   keeps the button busy until the scan answers and then refreshes the body.
  *   "Refresh lists" re-reads the host's displays and windows.
+ * - Scan settings: each switch change posts the form to /settings with fetch
+ *   (no reload) and the "Save settings" button is hidden. Without the script
+ *   the button posts the form and the server redirects back to /scan.
  *
  * Polling pauses while the tab is hidden; an event stream stays open. All
  * dynamic text is escaped.
@@ -364,22 +369,32 @@
   /* ------------------------------------------------------------------ */
 
   var scanTimer = null;
+  var scanLive = false;
+
+  function fetchScan() {
+    var bodyEl = $("wf-scan-body");
+    if (!bodyEl) return Promise.resolve();
+    return fetchJson("/api/scan").then(function (data) {
+      // The server renders the same markup the page was built with, so the
+      // empty-state inset toggling happens on the server side.
+      if (data && data.body) bodyEl.innerHTML = data.body;
+    });
+  }
 
   function scheduleScanPoll(delayMs) {
+    if (scanLive) {
+      // Live events drive the page; a forced refresh (after "Scan now").
+      if (delayMs === 0) fetchScan().catch(function () {});
+      return;
+    }
     clearTimeout(scanTimer);
     scanTimer = setTimeout(pollScan, delayMs);
   }
   function pollScan() {
-    var bodyEl = $("wf-scan-body");
-    if (!bodyEl) return;
-    fetchJson("/api/scan").then(function (data) {
-      if (data && data.body) {
-        // The server renders the same markup the page was built with, so the
-        // empty-state inset toggling happens on the server side.
-        bodyEl.innerHTML = data.body;
-      }
+    if (!$("wf-scan-body")) return;
+    fetchScan().then(function () {
       scheduleScanPoll(3000);
-    }).catch(function () {
+    }, function () {
       scheduleScanPoll(5000);
     });
   }
@@ -387,13 +402,18 @@
   function initScan() {
     if (!$("wf-scan-body")) return;
     document.addEventListener("visibilitychange", function () {
+      if (scanLive) return;
       if (scanTimer) {
         clearTimeout(scanTimer);
         scanTimer = null;
       }
       if (!document.hidden) scheduleScanPoll(500);
     });
-    scheduleScanPoll(3000);
+    scanLive = true;
+    watchLogEvents(["scan"], serial(fetchScan), function () {
+      scanLive = false;
+      scheduleScanPoll(3000);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -524,6 +544,88 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Scan settings (the /scan page's switches)                           */
+  /* ------------------------------------------------------------------ */
+
+  function setSettingsStatus(text, isError) {
+    var status = $("wf-settings-status");
+    if (!status) return;
+    status.hidden = text.length === 0;
+    status.className = isError
+      ? "govuk-body-s wf-err"
+      : "govuk-body-s wf-muted";
+    status.textContent = text;
+  }
+
+  function settingsBoxes(form) {
+    return form.querySelectorAll("input[type=checkbox]");
+  }
+
+  function applySettings(form, settings) {
+    var boxes = settingsBoxes(form);
+    for (var i = 0; i < boxes.length; i++) {
+      if (typeof settings[boxes[i].name] === "boolean") {
+        boxes[i].checked = settings[boxes[i].name];
+      }
+    }
+  }
+
+  function saveSettings(form, changed) {
+    var boxes = settingsBoxes(form);
+    var i;
+    for (i = 0; i < boxes.length; i++) boxes[i].disabled = true;
+    setSettingsStatus("Saving…", false);
+    // The form body carries every switch, exactly like the plain form post.
+    var body = new URLSearchParams();
+    for (i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) body.set(boxes[i].name, "on");
+    }
+
+    fetch(form.action, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: body,
+    }).then(function (resp) {
+      return resp.json().catch(function () {
+        return {};
+      }).then(function (data) {
+        if (resp.ok && data.ok) {
+          applySettings(form, data.settings || {});
+          setSettingsStatus(data.message || "Saved.", false);
+          return;
+        }
+        if (changed) changed.checked = !changed.checked;
+        setSettingsStatus(
+          data.error || "The settings were not saved (HTTP " + resp.status +
+              ").",
+          true,
+        );
+      });
+    }).catch(function (err) {
+      if (changed) changed.checked = !changed.checked;
+      setSettingsStatus("The settings were not saved: " + err.message, true);
+    }).finally(function () {
+      for (var j = 0; j < boxes.length; j++) boxes[j].disabled = false;
+    });
+  }
+
+  function initSettings() {
+    var form = $("wf-settings-form");
+    if (!form || !window.fetch || !window.URLSearchParams) return;
+    var save = $("wf-settings-save");
+    if (save) save.hidden = true;
+    form.addEventListener("change", function (event) {
+      if (event.target && event.target.type === "checkbox") {
+        saveSettings(form, event.target);
+      }
+    });
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveSettings(form, null);
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
 
   function init() {
     if (window.GOVUKFrontend && GOVUKFrontend.initAll) {
@@ -534,6 +636,7 @@
     initScan();
     initScanForm();
     initScanTargets();
+    initSettings();
   }
 
   if (document.readyState === "loading") {
