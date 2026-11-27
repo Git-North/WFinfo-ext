@@ -243,6 +243,17 @@ tries the watcher again every 10 s. Measured delay from the log line to the
 trigger: about 28 ms on macOS (FSEvents) and 6–17 ms on Linux (inotify); the
 earlier 250 ms poll took about 208 ms on Linux.
 
+### WFInfo-ext settings
+
+`<app dir>/wfinfo-ext-settings.json` holds two switches, both off by default:
+`{"version":1,"notifications":false,"overlayPin":false}`. `notifications`
+turns on the desktop notification for scans that the EE.log watch starts;
+`overlayPin` pins the overlay after a scan with names. The dashboard's Scan page
+writes the file; the runner only reads it (`Scan/ExtSettings.cs`), at each scan
+start and each watch trigger, so a change applies without a restart. A missing
+file means all off. An unreadable or invalid file also means all off, plus the
+warning SET-001 (Scroll).
+
 ### Game access
 
 What the scanner touches in Warframe's files, and what it never does:

@@ -15,8 +15,8 @@ and reports the outcome. It is an "independent digital service" (see
 - `deno.json` — tasks (`start`, `dev`, `check`, `test`, `fmt`, `lint`) and
   fmt/lint exclusions (AGENTS.md, README.md, `src/static`).
 - `src/main.ts` — HTTP server: routing (including `/scan`, `POST /scan/run`,
-  `/api/scan`, `/api/scan/targets`, `/scan/screenshot` and
-  `/api/logs/events`), env config (`PORT`,
+  `/api/scan`, `/api/scan/targets`, `/scan/screenshot`, `/api/logs/events`,
+  `POST /settings` and `/api/settings`), env config (`PORT`,
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
   `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`, `WFINFO_MAC_HELPER`), file
   reading, API endpoints.
@@ -32,6 +32,8 @@ and reports the outcome. It is an "independent digital service" (see
 - `src/lib/platform.ts` — per-OS defaults: the scan command (`nix run` on
   Linux; `dotnet` with the prebuilt runner DLL, else `dotnet run`, on macOS)
   and the `wfinfo-mac` path.
+- `src/lib/settings.ts` — `wfinfo-ext-settings.json`: read rules, the
+  atomic write, and the `POST /settings` / `GET /api/settings` routes.
 - `src/lib/fsdata.ts` — app-data dir resolution (mirrors headless
   `ConfigureEnvironment`), `debug.log` tail/parse helpers, OCR suite-result
   parsing.
@@ -89,8 +91,23 @@ and reports the outcome. It is an "independent digital service" (see
   `/scan/run` spawns `WFINFO_SCAN_CMD` (default: the flake's scan app at the
   checkout that holds `headless/`, `--no-notify`; on macOS `dotnet` runs that
   checkout's runner, see `src/lib/platform.ts`). The runner owns every file a
-  scan writes (`scans/`, `price_cache.json`); the dashboard itself still writes
-  nothing to the data dir.
+  scan writes (`scans/`, `price_cache.json`).
+- The dashboard writes one file in the data dir, and nothing else:
+  `<app dir>/wfinfo-ext-settings.json`, only through `POST /settings` in
+  `src/lib/settings.ts`. Why: the switches ("Notify on automatic scans", "Pin
+  the overlay after a scan", both off by default) must reach the runner, which
+  reads the file at each scan start and watch trigger, and the page is where
+  the user changes them. Format: `{"version":1,"notifications":false,
+  "overlayPin":false}`. Write a temporary file in the same folder, then
+  rename; never write in place. A failed write is SET-002 (Seal). Read rules
+  match `headless/Scan/ExtSettings.cs`: a missing file means all off; an
+  invalid one means all off plus SET-001 (Scroll); unknown keys are ignored.
+- `POST /settings` follows the `POST /scan/run` guard: same origin only, and
+  loopback only unless `WFINFO_SCAN_REMOTE=1`. A form post sets both switches
+  (an unchecked box is off) and gets `303` to `/scan`; a JSON body
+  (`{"notifications": true}`) sets the named switches; `Accept:
+  application/json` gets JSON. `GET /api/settings` returns the switches plus
+  `warning` (`SET-001` or null).
 - One scan at a time: a second request while a run is in flight is answered
   `409`, never queued — two runs would capture the screen twice and race on the
   scan record. A run past its deadline (180 s) is killed and reported as
@@ -171,7 +188,7 @@ and reports the outcome. It is an "independent digital service" (see
   `ocr_runs/*.json` (headless `--test` persistence), `market_items.json` and
   `market_data.json` (cached market DBs), `scans/latest.json` and
   `scans/last.png` (headless `--scan` records and capture). The dashboard
-  never writes to the data dir.
+  writes only `wfinfo-ext-settings.json` (see Local Contracts).
 
 ## Verification
 

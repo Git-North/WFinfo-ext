@@ -27,7 +27,7 @@ code type-checks without WPF/WinForms/Win32.
   `ScanWatcher.cs` (EE.log-driven automatic scanning), `PriceCache.cs` (local
   platinum cache with on-demand warframe.market refresh), `MarketSheet.cs`
   (indexes `market_items.json`/`market_data.json`), `Notifier.cs` (notify-send;
-  macOS: osascript),
+  macOS: osascript), `ExtSettings.cs` (reads `wfinfo-ext-settings.json`),
   `ScanModels.cs`/`ScanOptions.cs`/`Shell.cs`. The record shape is a contract
   with the dashboard's Scan page: the field list is in `README.md` (Scan) and
   the reader is `dashboard/src/lib/scan.ts` — change both together.
@@ -192,6 +192,16 @@ code type-checks without WPF/WinForms/Win32.
   `latest.json.<pid>.tmp`), then rename the screenshot and the record last.
   Never write either file in place. Stale `.tmp` files (owner process gone,
   or older than 10 minutes) are deleted at the next scan start.
+- `ExtSettings` (`<app dir>/wfinfo-ext-settings.json`,
+  `{"version":1,"notifications":false,"overlayPin":false}`): the runner only
+  reads it, never writes it (the dashboard owns the write). Call
+  `ExtSettings.Load()` at each scan start and each watch trigger, never once
+  per process. `Load` never throws: a missing file gives the defaults (all
+  off); an unreadable or invalid file (not a JSON object, version not 1, a
+  switch not true/false) gives the defaults and `WarningCode` "SET-001";
+  record that code as a warning. Unknown keys are ignored. `Load(path)` is
+  for tests on a temp dir. The rules match `dashboard/src/lib/settings.ts`;
+  change both together.
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
