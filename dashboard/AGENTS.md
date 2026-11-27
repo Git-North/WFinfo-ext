@@ -84,9 +84,11 @@ and reports the outcome. It is an "independent digital service" (see
   resolved on the server: the form carries an output name (`display:DP-2`) or a
   client id (`window:7`), and `src/lib/targets.ts` turns it into `--output` or
   `--region` from the geometry the compositor reports *now*. A token the
-  discovery does not know is refused (`400`), never substituted; an empty
-  choice runs the command with no capture argument (the runner then tries every
-  output). Target discovery is read-only, best-effort and memoised for 3 s:
+  discovery does not know is refused (`400`), never substituted. One exception
+  on Linux: when the display list is empty (no `wlr-randr`), a display name
+  still goes to grim. On macOS a display id must be in the list, also when the
+  list is empty. An empty choice runs the command with no capture argument
+  (the runner then tries every output). Target discovery is read-only, best-effort and memoised for 3 s:
   a missing `wlr-randr`/`mmsg` (or, on macOS, a missing `wfinfo-mac`) shortens
   the list and adds a note, it never fails the page. On macOS a window is
   captured by its id (`--window`), so no geometry is passed.

@@ -728,6 +728,15 @@ export function resolveCapture(
     }
     const found = targets.displays.find((d) => d.name === request.name) ??
       null;
+    // On macOS a display id must come from the list. On Linux an empty list
+    // (no wlr-randr) still lets an output name through to grim.
+    if (found === null && isMac(targets) && targets.displays.length === 0) {
+      return {
+        ok: false,
+        error:
+          "No displays were found on this host — refresh the display list, or choose automatic.",
+      };
+    }
     if (targets.displays.length > 0 && found === null) {
       return {
         ok: false,

@@ -522,6 +522,29 @@ Deno.test("macOS discovery without the helper adds a note, never fails", async (
   assertEquals(automatic.capture.args, []);
 });
 
+Deno.test("macOS: a display token is refused when no display was found", async () => {
+  const { runner } = fakeRunner({});
+  const targets = await discoverTargets(runner, {
+    os: "darwin",
+    macHelper: HELPER,
+  });
+  assertEquals(targets.displays, []);
+
+  const chosen = resolveCapture(targets, "display:1", "");
+  assertTrue(!chosen.ok, "an empty list knows no display id");
+  if (chosen.ok) return;
+  assertStringIncludes(chosen.error, "No displays were found");
+});
+
+Deno.test("Linux: an empty display list still passes an output name", () => {
+  const noRandr: ScanTargets = { displays: [], windows: [], notes: [] };
+
+  const chosen = resolveCapture(noRandr, "display:DP-2", "");
+  assertTrue(chosen.ok);
+  if (!chosen.ok) return;
+  assertEquals(chosen.capture.args, ["--output", "DP-2"]);
+});
+
 Deno.test("macOS discovery notes failed lists and hidden window titles", async () => {
   const { runner } = fakeRunner({
     [`${HELPER} displays`]: { code: 2, stdout: "" },
