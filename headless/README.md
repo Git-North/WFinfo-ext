@@ -21,45 +21,71 @@ The dev shell wires up native `libtesseract50.so`/`libleptonica-1.82.0.so`
 
 ## macOS (Apple Silicon, no Nix)
 
-The runner builds on macOS with Homebrew's .NET, and a small Swift helper,
-`wfinfo-mac`, gives it Apple's Vision framework (the Swift
-`RecognizeTextRequest` API, accurate mode; Vision can run it on the Neural
-Engine) and ScreenCaptureKit. The helper needs macOS 15 or later.
-`--selfcheck` reads its sample with Vision and loads no libgdiplus. It proves
-the Vision stack only: it does not run WFInfo's own pipeline (tessdata,
-System.Drawing). `--selfcheck --ocr tesseract` checks that pipeline.
+On macOS, Apple's Vision framework reads the reward-strip text with the Swift
+`RecognizeTextRequest` API (accurate mode; Vision can run it on the Neural
+Engine) and ScreenCaptureKit captures the screen. The helper needs macOS 15 or
+later.
+The default `--selfcheck` proves the Vision stack only: it does not run
+WFInfo's own pipeline (tessdata, System.Drawing). `--selfcheck --ocr
+tesseract` checks that pipeline.
 
-WFInfo's own pipeline (`--test`, `--theme-test`, `--scan`, `--selfcheck --ocr
-tesseract`) runs on `System.Drawing` and Tesseract, so on macOS it needs
-`mono-libgdiplus` and `tesseract`. Screen capture for `--scan` is still grim
-(Linux) in this runner.
+The macOS scan does not use WFInfo's own reward extraction (the theme colour
+filter and part boxes). That code runs on `System.Drawing`, which needs
+libgdiplus on macOS. Instead, the helper crops the reward-name rows at
+WFInfo's own layout positions and reads the raw colour crop with Vision; the
+runner groups the lines into reward slots and matches each slot with WFInfo's
+name correction. A scan and `--selfcheck` load no libgdiplus. `--ocr
+tesseract` keeps WFInfo's original pipeline for comparison and needs
+`mono-libgdiplus` and `tesseract`.
 
 ```bash
 brew install dotnet
-brew install mono-libgdiplus tesseract           # optional: only for WFInfo's own pipeline (--test, --theme-test, --scan)
+brew install mono-libgdiplus tesseract           # optional: only for --ocr tesseract, --test, --theme-test
 dotnet build headless/WFInfo.Headless.csproj     # also compiles headless/macos/wfinfo-mac
 dotnet run --project headless -- --selfcheck     # Vision (CoreText sample, no libgdiplus)
-dotnet run --project headless -- --selfcheck --ocr tesseract   # WFInfo's Tesseract stack
+dotnet run --project headless -- --layout-test   # offline reward-layout fixtures
+dotnet run --project headless -- --scan --no-notify            # capture every display
+dotnet run --project headless -- --scan --watch                # scan on every reward screen
 ```
 
 - The project targets net9.0 and rolls forward to the newest installed runtime
   (`RollForward=Major`), so Homebrew's .NET is enough.
-- `mono-libgdiplus` and `tesseract` are optional. The modes that run
-  WFInfo's own pipeline link Homebrew's libraries when they start (see
-  `macos/MacNative.cs`), or name the `brew install` command when one is
-  missing. The Vision self-check never loads them.
+- `mono-libgdiplus` and `tesseract` are optional. The developer modes
+  (`--ocr tesseract`, `--test`, `--theme-test`) link Homebrew's libraries
+  when they start (see `macos/MacNative.cs`), or name the `brew install`
+  command when one is missing. A Vision scan never loads them.
+- The UI scale comes from Warframe's `EE.cfg` next to `EE.log`
+  (`Flash.FlashDrawScale`, missing = 100 %), as in WFInfo. `--ui-scale
+  unknown` estimates it from the text instead; `--ui-scale 0.8` fixes it.
+- A scan writes no temporary files on macOS: the helper captures and reads
+  in memory and writes the capture straight to `scans/`. Each helper call
+  writes its own `scans/capture-<pid>-<n>.png`; the file of the selected
+  attempt becomes `scans/last.png` and the others are deleted.
+- No real reward screenshot was available when this was written. The scan is
+  tested on synthetic screens from `wfinfo-mac synth` (several resolutions,
+  UI scales and text colours, wrapped names, squad names, busy background).
 - The app dir is `~/Library/Application Support/WFInfo`. `WFINFO_DATA_DIR` has
   no effect on macOS.
-- `wfinfo-mac capture`/`rewards` need **Screen Recording** for the app that
-  starts them: System Settings > Privacy & Security > Screen & System Audio
-  Recording. Restart that app after the change.
+- Grant **Screen Recording** to the app that starts the scan (the terminal, or
+  the app that runs the dashboard): System Settings > Privacy & Security >
+  Screen & System Audio Recording. Restart that app after the change.
 - The first Vision call of a new helper binary prepares Apple's models (40–50 s
   once). Later calls take about 190 ms for one part image and about 250 ms for
-  eight in one call (accurate mode).
+  eight in one call (accurate mode). The scan gives each helper call 120 s, so
+  the first scan does not time out (the dashboard stops a scan at 180 s).
 - `--device` (or `WFINFO_VISION_DEVICE`) pins the compute device for every
   Vision stage that lists it (`wfinfo-mac devices`). Vision accepts the pin;
   timings are nearly the same on every device, so they do not show which unit
   ran the model.
+  Pinning needs a helper built with Xcode 26 or later (the macOS 26 SDK). A
+  helper built with Xcode 16 (the macOS 15 SDK) builds and runs, uses Vision's
+  automatic device, and prints a note for `--device ane|gpu|cpu`;
+  `wfinfo-mac devices` then reports `"canPinComputeDevice": false`.
+- `--watch` finds `EE.log` in Steam's compatibility prefix
+  (`~/Library/Application Support/Steam/steamapps/compatdata/230410/pfx/...`)
+  or in a CrossOver bottle. The newest log wins. On macOS the watch reacts
+  to file events (FSEvents) with a 3 s backup poll, about 35 ms from the log
+  line to the scan; Linux polls every 250 ms.
 
 The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 
@@ -130,7 +156,10 @@ nix run .#scan -- --json           # print the record to stdout
 |---|---|
 | `--file <png>` | OCR this screenshot instead of capturing the screen |
 | `--output <name>` | grim output (monitor) to capture; default tries each output, then the joined image |
-| `--region "X,Y WxH"` | capture one layout region — a window's frame, in the same coordinates the compositor reports for its clients |
+| `--region "X,Y WxH"` | Linux: capture one layout region — a window's frame, in the same coordinates the compositor reports for its clients. macOS refuses it (exit 2); use `--window` |
+| `--window <id>` | macOS: capture one window by its id (`wfinfo-mac windows`); `--output <id>` takes a display id there |
+| `--ocr <engine>` | `auto` (default: Vision on macOS), `vision` or `tesseract` |
+| `--ui-scale <s>` | macOS Vision scan: `auto` (EE.cfg, default), `unknown` (estimate from the text) or a fixed 0.5–1.25 |
 | `--theme <name>` | force a UI theme instead of the automatic probe (`auto` restores the probe) |
 | `--refresh` | ignore the local price-cache TTL for this run |
 | `--ttl <hours>` | price-cache lifetime (default 6) |
@@ -149,8 +178,10 @@ Each run does this:
    the first screen that parses, else the joined image. `--output` pins one
    output and `--region "X,Y WxH"` pins one layout region (a window's frame);
    either makes the scan a single capture, and `--file` pins an image on disk.
-2. OCR: the shared `ProcessRewardScreenForTest` pipeline plus WFInfo's
-   Levenshtein name correction against `market_items.json`. A failed attempt
+2. OCR (Linux, and `--ocr tesseract`): the shared `ProcessRewardScreenForTest`
+   pipeline plus WFInfo's Levenshtein name correction against
+   `market_items.json`. On macOS the default is the Vision layout described in
+   "macOS" above, with the same name correction. A failed attempt
    retries once per UI theme, because the theme probe samples a single pixel
    column. `--theme` pins one theme and skips the retries.
 3. Prices: the local cache answers instantly; missing or stale slugs are fetched
@@ -225,6 +256,7 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   "UiScaling": 1.0,
   "Theme": "STALKER",
   "ThemeWeight": 0.00398406374501992,
+  "OcrEngine": "tesseract",
   "Choices": [
     {
       "Index": 1,
@@ -244,15 +276,20 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   "Error": null
 }
 ```
-  Pinning needs a helper built with Xcode 26 or later (the macOS 26 SDK). A
-  helper built with Xcode 16 (the macOS 15 SDK) builds and runs, uses Vision's
-  automatic device, and prints a note for `--device ane|gpu|cpu`;
-  `wfinfo-mac devices` then reports `"canPinComputeDevice": false`.
-- Keys are always present; numbers are `null` when unknown.
+
+- Keys are always present, except `OcrEngine` in records written before that
+  field existed; numbers are `null` when unknown.
+- `CaptureSource`: `grim` (Linux capture), `screencapturekit` (macOS
+  capture) or `file` (`--file`).
 - `Choices[]` is in screen order, `Index` starts at 1; `Part` is the
   OCR-corrected market name, `Slug` the warframe.market `url_name`.
 - `PlatSource`: `wfm` (fetched this run), `cache`, `sheet` (offline fallback) or
   `none`.
+- `OcrEngine`: `vision-layout` (macOS: Vision on the name rows, no WFInfo
+  extraction) or `tesseract`. Records from before this field do not have it;
+  readers treat it as unknown. A `vision-layout` record has `Theme: null` and
+  `ThemeWeight: 0` (no theme probe runs), and `UiScaling` is the EE.cfg or
+  estimated UI scale.
 - `Theme` is the UI theme used for the extraction: the probe result, the retry
   that matched, or the forced name. `ThemeWeight` is the probe confidence and is
   `0` when a theme is forced.
@@ -271,8 +308,8 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   there.
 - `WFINFO_EE_LOG` — path to Warframe's `EE.log` for `--watch`; overrides the
   Steam/Proton prefix search (same as `--log`).
-- `WFINFO_OCR_ENGINE` — default for `--selfcheck --ocr`: `auto` (Vision on
-  macOS when the helper is built, else Tesseract), `vision` or `tesseract`.
+- `WFINFO_OCR_ENGINE` — default for `--ocr`: `auto` (Vision on macOS when the
+  helper is built, else Tesseract), `vision` or `tesseract`.
 - `WFINFO_VISION_DEVICE` — Vision compute device: `auto` (Vision chooses),
   `ane`, `gpu` or `cpu`.
 - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).

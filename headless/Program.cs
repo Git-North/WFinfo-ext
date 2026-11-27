@@ -95,6 +95,12 @@ namespace WFInfo
                 return await RunSelfCheck(clean.Skip(1).ToArray()).ConfigureAwait(false);
             }
 
+            // Offline check of the macOS reward layout (no capture, no images).
+            if (first.Equals("--layout-test", StringComparison.OrdinalIgnoreCase))
+            {
+                return RewardLayoutTest.Run();
+            }
+
             if (first.Equals("--scan", StringComparison.OrdinalIgnoreCase))
             {
                 return await RunScan(clean.Skip(1).ToArray()).ConfigureAwait(false);
@@ -235,9 +241,12 @@ namespace WFInfo
                 return ExitAllPassed;
             }
 
-            // WFInfo's own extraction: System.Drawing (libgdiplus) + Tesseract.
-            if (!MacNative.EnableGdiPlus()) return ExitFatal;
-            PrepareTesseract();
+            if (options.Ocr == "tesseract")
+            {
+                // WFInfo's own extraction: System.Drawing (libgdiplus) + Tesseract.
+                if (!MacNative.EnableGdiPlus()) return ExitFatal;
+                PrepareTesseract();
+            }
 
             try
             {
@@ -256,11 +265,21 @@ namespace WFInfo
                 };
                 WFInfoMain.dataBase = data;
 
-                var tesseractService = new TesseractService();
+                // macOS Vision layout: the helper captures and reads the screen, so
+                // no Tesseract engine, no tessdata and no System.Drawing are used.
+                VisionRewardScan vision = null;
+                if (options.Ocr == "vision")
+                {
+                    double? uiScale = options.UiScaleMode == "auto"
+                        ? EeLog.ReadUiScale(options.LogPath)
+                        : options.UiScale;
+                    vision = new VisionRewardScan(uiScale);
+                }
+                var tesseractService = vision == null ? new TesseractService() : null;
                 try
                 {
                     OCR.InitForTest(
-                        tesseractService,
+                        (ITesseractService)tesseractService ?? new NoTesseractService(),
                         ApplicationSettings.GlobalReadonlySettings,
                         windowService,
                         new HeadlessHDRDetector(false));
@@ -275,7 +294,7 @@ namespace WFInfo
                             Console.Error.WriteLine("WARNING: " + sheetWarning);
 
                         var cache = new PriceCache(ScanPaths.PriceCache, http);
-                        var runner = new ScanRunner(options, windowService, sheet, cache, settings);
+                        var runner = new ScanRunner(options, windowService, sheet, cache, settings, vision);
 
                         if (!options.Watch)
                             return await runner.RunAsync().ConfigureAwait(false);
@@ -285,7 +304,7 @@ namespace WFInfo
                 }
                 finally
                 {
-                    tesseractService.Dispose();
+                    tesseractService?.Dispose();
                 }
             }
             catch (Exception ex)
@@ -376,9 +395,13 @@ namespace WFInfo
             Console.WriteLine("Usage: WFInfo.Headless --scan [options]");
             Console.WriteLine();
             Console.WriteLine("  --file <png>      OCR this screenshot instead of capturing the screen");
-            Console.WriteLine("  --output <name>   grim output (monitor) to capture; default tries every output");
-            Console.WriteLine("  --region \"X,Y WxH\" capture one layout region (a window's frame), e.g. \"10,44 1900x1026\"");
-            Console.WriteLine("                    --file wins over --region, --region over --output");
+            Console.WriteLine("  --output <name>   grim output (Linux) or display id (macOS) to capture;");
+            Console.WriteLine("                    default tries every output");
+            Console.WriteLine("  --region \"X,Y WxH\" capture one layout region (a window's frame), e.g. \"10,44 1900x1026\" (Linux)");
+            Console.WriteLine("  --window <id>     capture one window by its id (macOS, see `wfinfo-mac windows`)");
+            Console.WriteLine("                    --file wins over --window/--region, those over --output");
+            Console.WriteLine("  --ocr <engine>    auto | vision | tesseract (default auto: Vision on macOS)");
+            Console.WriteLine("  --ui-scale <s>    macOS Vision scan: auto (EE.cfg, default) | unknown (estimate) | 0.5-1.25");
             Console.WriteLine("  --theme <name>    force a UI theme instead of the automatic probe");
             Console.WriteLine("                    (auto | " + ScanOptions.ThemeNames() + ")");
             Console.WriteLine("  --refresh         ignore the local price-cache TTL for this run");

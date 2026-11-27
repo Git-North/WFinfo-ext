@@ -1,23 +1,34 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using WFInfo.MacOS;
 
 namespace WFInfo.Scan
 {
     /// <summary>
-    /// Screen capture through grim (wlroots). No shared-code screenshot seam is
-    /// involved: the scan writes a PNG and OCRs it from disk, exactly like the
-    /// regression suite does with its fixtures.
+    /// Screen capture: grim (wlroots) on Linux, ScreenCaptureKit through the
+    /// wfinfo-mac helper on macOS. No shared-code screenshot seam is involved:
+    /// the scan writes a PNG and OCRs it from disk, exactly like the regression
+    /// suite does with its fixtures.
     /// </summary>
     internal static class ScreenCapture
     {
-        public static bool Available => Shell.Which("grim") != null;
+        /// <summary>What the scan record reports as CaptureSource for a live capture.</summary>
+        public static string SourceName => OperatingSystem.IsMacOS() ? "screencapturekit" : "grim";
 
-        /// <summary>Output names reported by wlr-randr; empty when it is unavailable.</summary>
+        public static bool Available => OperatingSystem.IsMacOS() ? MacHelper.Available : Shell.Which("grim") != null;
+
+        /// <summary>
+        /// Output names reported by wlr-randr (Linux), or display ids, main display
+        /// first (macOS); empty when the tool is unavailable.
+        /// </summary>
         public static List<string> ListOutputs()
         {
+            if (OperatingSystem.IsMacOS()) return ListMacDisplays();
+
             var outputs = new List<string>();
             string randr = Shell.Which("wlr-randr");
             if (randr == null) return outputs;
@@ -118,6 +129,68 @@ namespace WFInfo.Scan
 
             error = null;
             return true;
+        }
+
+        /// <summary>Display ids from wfinfo-mac, main display first.</summary>
+        private static List<string> ListMacDisplays()
+        {
+            var outputs = new List<string>();
+            if (!MacHelper.Available) return outputs;
+            try
+            {
+                JToken displays = MacHelper.Run(new[] { "displays" }, 5000);
+                foreach (JToken display in displays.Children()
+                    .OrderByDescending(d => d["main"]?.Value<bool>() ?? false))
+                {
+                    string id = display["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(id)) outputs.Add(id);
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                Main.AddLog("Cannot list displays: " + ex.Message);
+            }
+            return outputs;
+        }
+
+        /// <summary>
+        /// macOS capture through ScreenCaptureKit (`wfinfo-mac capture ... -`): one
+        /// window by its CGWindowID, else one display by its id, else the main
+        /// display. The PNG comes back on the helper's stdout, so nothing is
+        /// written to a temp folder. Needs the Screen Recording permission of the
+        /// app that started the scan. Null (and an error) on failure.
+        /// </summary>
+        public static byte[] CaptureMacPng(string display, string window, out string error)
+        {
+            var arguments = new List<string> { "capture" };
+            if (!string.IsNullOrEmpty(window))
+            {
+                arguments.Add("--window");
+                arguments.Add(window);
+            }
+            else if (!string.IsNullOrEmpty(display))
+            {
+                arguments.Add("--display");
+                arguments.Add(display);
+            }
+            arguments.Add("-");
+
+            try
+            {
+                byte[] png = MacHelper.RunBytes(arguments, 15000);
+                if (png.Length == 0)
+                {
+                    error = "the capture returned no image";
+                    return null;
+                }
+                error = null;
+                return png;
+            }
+            catch (InvalidOperationException ex)
+            {
+                error = ex.Message;
+                return null;
+            }
         }
     }
 }

@@ -40,8 +40,17 @@ namespace WFInfo.Scan
         /// <summary>OCR this PNG instead of capturing the screen.</summary>
         public string File { get; private set; }
 
-        /// <summary>grim output name (monitor); null captures every output.</summary>
+        /// <summary>
+        /// grim output name (Linux) or display id (macOS); null captures every
+        /// output.
+        /// </summary>
         public string Output { get; private set; }
+
+        /// <summary>macOS window id (CGWindowID) to capture; wins over <see cref="Output"/>.</summary>
+        public string Window { get; private set; }
+
+        /// <summary>Text engine for the reward strip: "vision" or "tesseract" (resolved, never "auto").</summary>
+        public string Ocr { get; private set; } = WFInfo.MacOS.OcrEngines.Resolve(null);
 
         /// <summary>
         /// grim region ("X,Y WxH", layout coordinates) to capture instead of a
@@ -80,6 +89,15 @@ namespace WFInfo.Scan
         public string LogPath { get; private set; }
 
         /// <summary>
+        /// macOS Vision scan UI scale: "auto" reads Warframe's EE.cfg, "unknown"
+        /// lets the layout estimate it, "fixed" uses <see cref="UiScale"/>.
+        /// </summary>
+        public string UiScaleMode { get; private set; } = "auto";
+
+        /// <summary>The fixed UI scale for <see cref="UiScaleMode"/> "fixed"; null otherwise.</summary>
+        public double? UiScale { get; private set; }
+
+        /// <summary>
         /// Seconds to keep re-capturing after a trigger until at least one
         /// reward part is recognised. The game writes the trigger line before
         /// the reward panel is on screen, so a single capture races it.
@@ -110,6 +128,15 @@ namespace WFInfo.Scan
                     case "--output":
                         options.Output = RequireValue(args, ref i, arg);
                         break;
+                    case "--window":
+                        string window = RequireValue(args, ref i, arg);
+                        if (!Regex.IsMatch(window, @"^\d{1,12}$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
+                            throw new ArgumentException($"--window expects a numeric window id, got '{window}'");
+                        options.Window = window;
+                        break;
+                    case "--ocr":
+                        options.Ocr = WFInfo.MacOS.OcrEngines.Resolve(RequireValue(args, ref i, arg));
+                        break;
                     case "--region":
                         options.Region = ParseRegion(RequireValue(args, ref i, arg));
                         break;
@@ -138,6 +165,25 @@ namespace WFInfo.Scan
                     case "--once":
                         options.Once = true;
                         break;
+                    case "--ui-scale":
+                        string scale = RequireValue(args, ref i, arg).Trim().ToLowerInvariant();
+                        if (scale == "auto" || scale == "unknown")
+                        {
+                            options.UiScaleMode = scale;
+                            options.UiScale = null;
+                        }
+                        else if (double.TryParse(scale, System.Globalization.NumberStyles.Float,
+                                     System.Globalization.CultureInfo.InvariantCulture, out double fixedScale)
+                                 && fixedScale >= 0.5 && fixedScale <= 1.25)
+                        {
+                            options.UiScaleMode = "fixed";
+                            options.UiScale = fixedScale;
+                        }
+                        else
+                        {
+                            throw new ArgumentException($"--ui-scale expects auto, unknown or 0.5-1.25, got '{scale}'");
+                        }
+                        break;
                     case "--log":
                         options.LogPath = RequireValue(args, ref i, arg);
                         break;
@@ -160,6 +206,9 @@ namespace WFInfo.Scan
             if (options.Once) options.Watch = true;
             if (options.Watch && options.File != null)
                 throw new ArgumentException("--watch reads the live screen; --file cannot be combined with it");
+            // macOS captures a window by id, not by a layout region (ScreenCaptureKit).
+            if (OperatingSystem.IsMacOS() && options.Region != null)
+                throw new ArgumentException("--region is Linux-only; on macOS use --window <id> or --output <display id>");
 
             return options;
         }
@@ -185,12 +234,20 @@ namespace WFInfo.Scan
         /// <summary>grim -g accepts "X,Y WxH" in layout coordinates; anything else is a typo.</summary>
         private static readonly Regex RegionPattern = new Regex(
             @"^\s*(-?\d+)\s*,\s*(-?\d+)\s+(\d+)\s*[xX]\s*(\d+)\s*$",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
         /// <summary>Normalizes a grim region; throws <see cref="ArgumentException"/> on bad input.</summary>
         private static string ParseRegion(string value)
         {
-            Match match = RegionPattern.Match(value ?? string.Empty);
+            Match match;
+            try
+            {
+                match = RegionPattern.Match(value ?? string.Empty);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                match = Match.Empty; // a timeout is an invalid region
+            }
             int width = 0;
             int height = 0;
             bool sized = match.Success
