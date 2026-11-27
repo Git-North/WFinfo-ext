@@ -22,6 +22,7 @@
  *                        the headless runner, prebuilt DLL else dotnet run)
  *   WFINFO_SCAN_ROOT     checkout the default command builds the runner from
  *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests from another host
+ *                        and to show it the display and window lists
  *   WFINFO_MAC_HELPER    macOS: wfinfo-mac path for the display/window lists
  *                        (default <checkout>/headless/bin/Debug/net9.0/wfinfo-mac)
  *
@@ -71,9 +72,11 @@ import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
 import {
   denoRunner,
   discoverTargets,
+  remoteClient,
   resolveCapture,
   type ScanTargets,
   toOptions,
+  withheldTargets,
 } from "./lib/targets.ts";
 
 const PORT = Number(Deno.env.get("PORT") ?? "8000");
@@ -531,9 +534,26 @@ function apiScan(): Response {
 }
 
 /** The scan page's display/window lists; `?refresh=1` skips the short memo. */
-async function apiScanTargets(url: URL): Promise<Response> {
-  const targets = await captureTargets(url.searchParams.get("refresh") === "1");
-  return json(toOptions(targets));
+async function apiScanTargets(
+  url: URL,
+  info?: Deno.ServeHandlerInfo,
+): Promise<Response> {
+  const refresh = url.searchParams.get("refresh") === "1";
+  return json(toOptions(await clientTargets(info, refresh)));
+}
+
+/**
+ * The lists carry the host's window titles: like a scan run, only this host
+ * gets them, unless WFINFO_SCAN_REMOTE is set. Another host gets a note.
+ */
+async function clientTargets(
+  info?: Deno.ServeHandlerInfo,
+  force = false,
+): Promise<ScanTargets> {
+  const remote = remoteClient(info?.remoteAddr, SCAN_REMOTE);
+  return remote === null
+    ? await captureTargets(force)
+    : withheldTargets(remote);
 }
 
 /* ------------------------------------------------------------------ */
@@ -570,15 +590,11 @@ async function scanRun(
     }
   }
 
-  const remote = info?.remoteAddr;
-  if (
-    !SCAN_REMOTE && remote !== undefined && remote.transport === "tcp" &&
-    !(remote.hostname === "::1" || remote.hostname.startsWith("127.") ||
-      remote.hostname.startsWith("::ffff:127."))
-  ) {
+  const remote = remoteClient(info?.remoteAddr, SCAN_REMOTE);
+  if (remote !== null) {
     return json({
       error:
-        `A scan captures the screen of the machine that hosts the dashboard, and ${remote.hostname} is another host. Set WFINFO_SCAN_REMOTE=1 to accept scan requests from other hosts.`,
+        `A scan captures the screen of the machine that hosts the dashboard, and ${remote} is another host. Set WFINFO_SCAN_REMOTE=1 to accept scan requests from other hosts.`,
     }, 403);
   }
 
@@ -731,7 +747,9 @@ async function handler(
     if (path === "/recent") return html(recentPageHtml(recentState()));
 
     if (path === "/scan") {
-      return html(scanPageHtml(scanState(), toOptions(await captureTargets())));
+      return html(
+        scanPageHtml(scanState(), toOptions(await clientTargets(info))),
+      );
     }
 
     if (path === "/scan/screenshot") {
@@ -770,7 +788,7 @@ async function handler(
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();
     if (path === "/api/scan") return apiScan();
-    if (path === "/api/scan/targets") return await apiScanTargets(url);
+    if (path === "/api/scan/targets") return await apiScanTargets(url, info);
 
     if (path.startsWith("/govuk/")) {
       const asset = await govukAsset(path);

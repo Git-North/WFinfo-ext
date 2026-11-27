@@ -503,7 +503,7 @@ async function readMacTargets(
   );
   if (displaysOut.code === null) {
     notes.push(
-      `The wfinfo-mac helper was not found (${helper}); build headless on macOS to list displays and windows. A scan then captures every display.`,
+      `The wfinfo-mac helper was not found (${helper}), so displays and windows cannot be listed and a scan cannot capture. Build headless on macOS, or set WFINFO_MAC_HELPER to the path of the helper.`,
     );
     return empty;
   }
@@ -607,6 +607,41 @@ export function denoRunner(): CommandRunner {
         clearTimeout(deadline);
       }
     },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Who may see the lists                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The address of a client on another host, or null when the client is this
+ * host (a loopback address, or no TCP address at all) or when `allowRemote`
+ * (WFINFO_SCAN_REMOTE) accepts other hosts. The dashboard has no
+ * authentication, so this one rule guards both the scan run and the
+ * display/window lists, which carry the host's window titles.
+ */
+export function remoteClient(
+  remote: Deno.Addr | undefined,
+  allowRemote: boolean,
+): string | null {
+  if (allowRemote || remote === undefined || remote.transport !== "tcp") {
+    return null;
+  }
+  const host = remote.hostname;
+  const loopback = host === "::1" || host.startsWith("127.") ||
+    host.startsWith("::ffff:127.");
+  return loopback ? null : host;
+}
+
+/** What a client on another host gets instead of this host's lists. */
+export function withheldTargets(client: string): ScanTargets {
+  return {
+    displays: [],
+    windows: [],
+    notes: [
+      `The display and window lists are shown only on the machine that hosts the dashboard, and ${client} is another host. Set WFINFO_SCAN_REMOTE=1 to show them to other hosts.`,
+    ],
   };
 }
 
@@ -728,6 +763,15 @@ export function resolveCapture(
     }
     const found = targets.displays.find((d) => d.name === request.name) ??
       null;
+    // On macOS a display id must come from the list. On Linux an empty list
+    // (no wlr-randr) still lets an output name through to grim.
+    if (found === null && isMac(targets) && targets.displays.length === 0) {
+      return {
+        ok: false,
+        error:
+          "No displays were found on this host — refresh the display list, or choose automatic.",
+      };
+    }
     if (targets.displays.length > 0 && found === null) {
       return {
         ok: false,

@@ -27,7 +27,8 @@ and reports the outcome. It is an "independent digital service" (see
   displays, `mmsg get all-clients` window frames (mango IPC), `wlrctl toplevel
   list` names as a fallback, and the choice → `--output`/`--region` mapping.
   On macOS: `wfinfo-mac displays`/`windows` (the headless Swift helper), and the
-  choice → `--output <display id>`/`--window <window id>` mapping.
+  choice → `--output <display id>`/`--window <window id>` mapping. Also the
+  loopback check (`remoteClient`) that guards the lists and the scan run.
 - `src/lib/platform.ts` — per-OS defaults: the scan command (`nix run` on
   Linux; `dotnet` with the prebuilt runner DLL, else `dotnet run`, on macOS)
   and the `wfinfo-mac` path.
@@ -89,15 +90,23 @@ and reports the outcome. It is an "independent digital service" (see
   resolved on the server: the form carries an output name (`display:DP-2`) or a
   client id (`window:7`), and `src/lib/targets.ts` turns it into `--output` or
   `--region` from the geometry the compositor reports *now*. A token the
-  discovery does not know is refused (`400`), never substituted; an empty
-  choice runs the command with no capture argument (the runner then tries every
-  output). Target discovery is read-only, best-effort and memoised for 3 s:
+  discovery does not know is refused (`400`), never substituted. One exception
+  on Linux: when the display list is empty (no `wlr-randr`), a display name
+  still goes to grim. On macOS a display id must be in the list, also when the
+  list is empty. An empty choice runs the command with no capture argument
+  (the runner then tries every output). Target discovery is read-only, best-effort and memoised for 3 s:
   a missing `wlr-randr`/`mmsg` (or, on macOS, a missing `wfinfo-mac`) shortens
   the list and adds a note, it never fails the page. On macOS a window is
   captured by its id (`--window`), so no geometry is passed.
 - The route is a POST and is loopback-only: a cross-site post is refused, and a
   request from another host needs `WFINFO_SCAN_REMOTE=1`. The dashboard has no
   authentication; a scan captures the screen of the host that runs it.
+- The display and window lists (`/api/scan/targets` and the `/scan` page)
+  carry the host's window titles. They follow the same rule: only a loopback
+  client gets them, unless `WFINFO_SCAN_REMOTE=1`. Another host gets empty
+  lists and a note that says why. `remoteClient` in `src/lib/targets.ts` is
+  the one loopback check for the lists and for `POST /scan/run`. The server
+  listens on all interfaces (`Deno.serve` without `hostname`).
 - Log views are event-driven: `GET /api/logs/events` sends `event: change`
   with `{"source": "debug.log" | "ocr_runs"}` on each change, `event: ready`
   when the stream opens, and `: ping` every 25 s. `?source=` (repeatable)

@@ -76,6 +76,13 @@
     <Exec Command="swiftc -O -target $(MacHelperArch)-apple-macos$(MacHelperMinimumOS) -o &quot;$(OutDir)wfinfo-mac&quot; &quot;$(MSBuildThisFileDirectory)macos/wfinfo-mac.swift&quot;" />
   </Target>
 
+  <!-- macOS: `dotnet publish` copies only the build's .NET outputs, so copy the
+       helper into the publish folder too. Other hosts skip this target. -->
+  <Target Name="PublishMacHelper" AfterTargets="Publish" DependsOnTargets="BuildMacHelper"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Copy SourceFiles="$(OutDir)wfinfo-mac" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="System.Drawing.EnableUnixSupport" Value="true" />
   </ItemGroup>

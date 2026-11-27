@@ -50,9 +50,12 @@ export interface ScanResult {
   startedMs: number;
   finishedMs: number | null;
   durationMs: number | null;
-  /** "grim" (screen capture) or "file" (--file <png>). */
+  /**
+   * "grim" (Linux capture), "screencapturekit" (macOS capture) or "file"
+   * (--file <png>).
+   */
   captureSource: string | null;
-  /** The grim output name, or the input file path. */
+  /** The grim output name, "display <id>"/"window <id>" (macOS), or the input file path. */
   captureTarget: string | null;
   screenshotPath: string | null;
   screenshotWidth: number | null;

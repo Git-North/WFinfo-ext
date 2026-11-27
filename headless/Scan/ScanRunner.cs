@@ -37,6 +37,7 @@ namespace WFInfo.Scan
         private readonly PriceCache _cache;
         private readonly ApplicationSettings _settings;
         private readonly VisionRewardScan _visionLayout;
+        private int _captureCount;
 
         /// <param name="visionLayout">
         /// macOS Vision layout scan (no System.Drawing); null runs WFInfo's own
@@ -203,19 +204,15 @@ namespace WFInfo.Scan
             DateTime attemptDeadline = startedUtc.AddSeconds(_options.WaitSeconds);
             while (true)
             {
-                int index = 0;
                 foreach (CaptureCandidate candidate in BuildCandidates())
                 {
                     string file = candidate.Kind == "file" ? candidate.Path : null;
-                    string save = file == null
-                        ? Path.Combine(ScanPaths.ScansDir, "capture-" + index++ + ".png")
-                        : null;
 
-                    VisionRewardScan.Attempt attempt = _visionLayout.Run(candidate.Output, candidate.Window, file, save);
+                    // Run deletes the capture of a failed or losing pass itself.
+                    VisionRewardScan.Attempt attempt = _visionLayout.Run(candidate.Output, candidate.Window, file, NextCapturePath);
                     if (attempt.Error != null)
                     {
                         lastError = attempt.Error;
-                        TryDelete(save);
                         continue;
                     }
 
@@ -291,6 +288,16 @@ namespace WFInfo.Scan
             return result.Error == null ? 0 : 1;
         }
 
+        /// <summary>
+        /// A new capture path for one helper call: scans/capture-&lt;pid&gt;-&lt;n&gt;.png.
+        /// The process id keeps two scan processes apart; the counter keeps every
+        /// call of this process apart (candidates, retries, both scale passes,
+        /// and every scan of a watch).
+        /// </summary>
+        private string NextCapturePath() =>
+            Path.Combine(ScanPaths.ScansDir, string.Format(CultureInfo.InvariantCulture,
+                "capture-{0}-{1}.png", Environment.ProcessId, ++_captureCount));
+
         /// <summary>The helper's capture becomes scans/last.png (same directory, so a rename).</summary>
         private static string MoveToScreenshot(string savedPng)
         {
@@ -303,6 +310,7 @@ namespace WFInfo.Scan
             catch (Exception ex)
             {
                 Main.AddLog("Failed to store the scan screenshot: " + ex.Message);
+                TryDelete(savedPng);
                 return null;
             }
         }
