@@ -187,6 +187,10 @@ Each run does this:
    the same rule as the Windows overlay) and is posted with `notify-send`.
 5. Record: `<data dir>/WFInfo/scans/latest.json`, one timestamped copy per run
    (newest 60 kept) and the OCR'd screenshot as `scans/last.png`.
+   `last.png` and `latest.json` are published as a pair: both are written
+   under temporary names in `scans/` first, then renamed into place
+   (screenshot first, record last). A scan that is killed leaves the previous
+   pair as it was; a later run deletes its `.tmp` files.
 
 `<data dir>/WFInfo/price_cache.json` holds the platinum cache keyed by
 warframe.market slug (`plat`, 48-hour `volume`, `fetchedAt`). Failed fetches are
