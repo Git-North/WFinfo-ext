@@ -53,9 +53,9 @@ code type-checks without WPF/WinForms/Win32.
   `Package.swift` (SwiftPM build of the same file, tools 5.9,
   `.macOS("15.0")`), `MacHelper.cs` (finds and runs the helper),
   `OcrEngines.cs` (auto/vision/tesseract choice),
-  `VisionRewardScan.cs` (the macOS reward scan, see below), `RewardLayout.cs`
-  (Vision lines → reward slots), `RewardLayoutTest.cs` (offline fixtures,
-  `--layout-test`), `NoTesseractService.cs` (no engines for Vision-only
+  `VisionRewardScan.cs` (the macOS reward scan, see below), `layout/` (Rust
+  crate `wfinfo-layout`, a cdylib: Vision lines → reward slots; its tests run
+  with `cargo test`), `NoTesseractService.cs` (no engines for Vision-only
   runs), `MacNative.cs` (libgdiplus and Tesseract links for the developer
   modes only). The csproj target `BuildMacHelper` compiles the helper
   with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
@@ -71,7 +71,7 @@ code type-checks without WPF/WinForms/Win32.
   the accepted one becomes `scans/last.png`). The `--ocr tesseract` path gets
   its capture on the helper's stdout (`capture ... -`). Keep it that way. The
   Linux grim path still uses a per-run temp dir and deletes it.
-- The `rewards` JSON is a contract with `RewardLayout.cs` and
+- The `rewards` JSON is a contract with the Rust layout (`layout/`) and
   `VisionRewardScan.cs`: `source`, `width`, `height`, `screenScaling`,
   `uiScaleMin`/`uiScaleMax`, `crop`, `lines[]` (`text`, `confidence`, `box`
   in full-image pixels with a top-left origin), `saved`, `ms`. Keep it stable
@@ -111,7 +111,7 @@ code type-checks without WPF/WinForms/Win32.
   macOS; the user wants that library out of the scan, with no fallback.
   Instead: `wfinfo-mac rewards` captures, crops WFInfo's name rows (the
   `OCR.pixle*`/`pixelRewardLineHeight` constants, passed as arguments) and
-  runs Vision on the raw colour crop; `RewardLayout` keeps the lines in the
+  runs Vision on the raw colour crop; the Rust layout keeps the lines in the
   name rows, groups them into slots and joins wrapped names; each slot's
   candidates go through WFInfo's own `OCR.PartNameValid`,
   `Data.GetPartName` and `OCR.GetMaxAllowedLevenshteinDistance` (private, so
@@ -119,6 +119,18 @@ code type-checks without WPF/WinForms/Win32.
   EE.log (`--ui-scale auto`, WFInfo's rule); when it is unknown, a wide pass
   estimates it and a second pass reads the exact crop, because Vision drops
   names in a wide crop.
+- New code that would be C, C# or C++ is written in Rust (user rule); existing
+  files keep their language. C# stays only where code calls .NET or WFInfo
+  (`VisionRewardScan.cs`, `MacHelper.cs`, `MacNative.cs`,
+  `NoTesseractService.cs`, `OcrEngines.cs`). The reward layout is Rust
+  (`macos/layout/`, serde + serde_json only, `Cargo.lock` and
+  `rust-toolchain.toml` committed). Its C ABI: `wfinfo_layout(const char*
+  json) -> char*` and `wfinfo_layout_free(char*)`; JSON in (`helper`,
+  `rewardWidth`, `rewardHeight`, `rewardY`, `lineHeight`), JSON out (`uiScale`,
+  `uiScaleEstimated`, `slots[].candidates`, `notes`, … or `error`). The csproj
+  target `BuildRustLayout` runs `cargo build --release --locked` on macOS
+  only (output under `obj/rust-layout/`) and copies `libwfinfo_layout.dylib`
+  next to the runner; Linux and Windows builds need no Rust.
 - The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
   The OCR engine is chosen in `headless/`; use runtime checks
   (`OperatingSystem.IsMacOS()`), never `#if`.
@@ -182,7 +194,7 @@ code type-checks without WPF/WinForms/Win32.
   — verify the plumbing with `--file` and the capture path with a plain
   `--scan` on any desktop.
 
-- macOS (no Nix): `brew install dotnet`, then plain `dotnet build`/`dotnet run
+- macOS (no Nix): `brew install dotnet rust`, then plain `dotnet build`/`dotnet run
   --project headless -- ...`. `mono-libgdiplus` and `tesseract` are optional:
   only the developer modes (`--ocr tesseract`, `--test`, `--theme-test`) need
   them.
@@ -221,8 +233,8 @@ code type-checks without WPF/WinForms/Win32.
   before claiming the watch works.
 - macOS: `dotnet run --project headless -- --selfcheck` (Vision) — PASS, and
   no libgdiplus in the loaded images (see the proof above).
-- macOS: `dotnet run --project headless -- --layout-test` — all cases PASS
-  (offline, no capture).
+- macOS: `cd headless/macos/layout && cargo test` — the layout cases and the
+  parity fixtures PASS (offline, no capture).
 - macOS: `--scan --no-notify --file <synth png> --ui-scale unknown` — every
   synthetic name priced.
 - macOS: `headless/bin/Debug/net9.0/wfinfo-mac devices` lists the compute

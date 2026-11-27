@@ -1,0 +1,139 @@
+//! WFInfo macOS reward layout.
+//!
+//! `wfinfo-mac rewards` reads text from a reward screen with Apple Vision and
+//! prints lines with boxes. This library keeps the lines that sit in WFInfo's
+//! name rows, groups them into reward slots and joins wrapped names. The C#
+//! runner (`VisionRewardScan.cs`) calls it through two C functions:
+//!
+//! - `wfinfo_layout(const char *json) -> char *`: JSON in, JSON out. The input
+//!   has `helper` (the `rewards` JSON), `rewardWidth`, `rewardHeight`,
+//!   `rewardY` and `lineHeight` (WFInfo's OCR constants). The output has
+//!   `uiScale`, `uiScaleEstimated`, `screenScaling`, `rowTop`, `rowBottom`,
+//!   `slots[]` (`centerX`, `gridX`, `lines`, `candidates`, `otherLines`),
+//!   `notes` and `scaleScores`; on bad input it is `{"error": "..."}`.
+//! - `wfinfo_layout_free(char *)`: frees a string `wfinfo_layout` returned.
+
+mod dotnet;
+mod layout;
+mod letters;
+
+use layout::{LayoutLine, RewardLayoutResult, RewardSlot, analyze, parse_lines};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::ffi::{CStr, CString, c_char};
+use std::panic::catch_unwind;
+use std::ptr;
+
+#[derive(Deserialize)]
+struct Input {
+    #[serde(default)]
+    helper: Value,
+    #[serde(rename = "rewardWidth")]
+    reward_width: i32,
+    #[serde(rename = "rewardHeight")]
+    reward_height: i32,
+    #[serde(rename = "rewardY")]
+    reward_y: i32,
+    #[serde(rename = "lineHeight")]
+    line_height: i32,
+}
+
+fn line_json(l: &LayoutLine) -> Value {
+    json!({
+        "text": l.text,
+        "confidence": l.confidence,
+        "box": { "x": l.bx.x, "y": l.bx.y, "width": l.bx.width, "height": l.bx.height },
+    })
+}
+
+fn slot_json(s: &RewardSlot<'_>) -> Value {
+    json!({
+        "centerX": s.center_x,
+        "gridX": s.grid_x,
+        "lines": s.lines.iter().map(|l| line_json(l)).collect::<Vec<_>>(),
+        "candidates": s.candidates,
+        "otherLines": s.other_lines.iter().map(|l| line_json(l)).collect::<Vec<_>>(),
+    })
+}
+
+fn result_json(r: &RewardLayoutResult<'_>) -> Value {
+    json!({
+        "uiScale": r.ui_scale,
+        "uiScaleEstimated": r.ui_scale_estimated,
+        "screenScaling": r.screen_scaling,
+        "rowTop": r.row_top,
+        "rowBottom": r.row_bottom,
+        "slots": r.slots.iter().map(slot_json).collect::<Vec<_>>(),
+        "notes": r.notes,
+        "scaleScores": r.scale_scores.iter()
+            .map(|x| json!({ "uiScale": x.ui_scale, "score": x.score }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn error_json(message: &str) -> String {
+    json!({ "error": message }).to_string()
+}
+
+/// The whole step on UTF-8 JSON text: the C ABI is a thin shell around this.
+pub fn layout_json(input: &str) -> String {
+    let input: Input = match serde_json::from_str(input) {
+        Ok(input) => input,
+        Err(e) => return error_json(&format!("bad input: {e}")),
+    };
+    let lines = parse_lines(input.helper.get("lines"));
+    let result = analyze(
+        &input.helper,
+        &lines,
+        input.reward_width,
+        input.reward_height,
+        input.reward_y,
+        input.line_height,
+    );
+    result_json(&result).to_string()
+}
+
+fn into_c_string(text: String) -> *mut c_char {
+    CString::new(text).map_or(ptr::null_mut(), CString::into_raw)
+}
+
+/// Runs the layout on a NUL-terminated UTF-8 JSON string and returns a
+/// NUL-terminated UTF-8 JSON string, to free with [`wfinfo_layout_free`].
+/// Returns null only when it cannot allocate the answer.
+///
+/// # Safety
+/// `json` must be null or point to a NUL-terminated string that stays valid
+/// for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wfinfo_layout(json: *const c_char) -> *mut c_char {
+    let answer = catch_unwind(|| {
+        if json.is_null() {
+            return error_json("null input");
+        }
+        // SAFETY: the caller promises a valid NUL-terminated string (see above).
+        let bytes = unsafe { CStr::from_ptr(json) }.to_bytes();
+        match std::str::from_utf8(bytes) {
+            Ok(text) => layout_json(text),
+            Err(_) => error_json("input is not UTF-8"),
+        }
+    })
+    .unwrap_or_else(|_| error_json("internal error"));
+    into_c_string(answer)
+}
+
+/// Frees a string returned by [`wfinfo_layout`]. Null is ignored.
+///
+/// # Safety
+/// `text` must be null or a pointer returned by `wfinfo_layout` that has not
+/// been freed yet.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wfinfo_layout_free(text: *mut c_char) {
+    if !text.is_null() {
+        // SAFETY: the pointer came from `CString::into_raw` in `wfinfo_layout`
+        // and the caller frees it once.
+        drop(unsafe { CString::from_raw(text) });
+    }
+}
+
+#[cfg(test)]
+mod tests;

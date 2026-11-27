@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace WFInfo.MacOS
@@ -13,8 +16,9 @@ namespace WFInfo.MacOS
     /// 1. `wfinfo-mac rewards` captures the screen (or reads a file), crops a
     ///    band around WFInfo's reward-name rows and runs Apple Vision on the raw
     ///    colour crop. Lines come back with full-image boxes.
-    /// 2. <see cref="RewardLayout"/> keeps the lines in the name rows, groups
-    ///    them into reward slots and joins wrapped names.
+    /// 2. The reward layout (Rust, headless/macos/layout, `libwfinfo_layout`)
+    ///    keeps the lines in the name rows, groups them into reward slots and
+    ///    joins wrapped names.
     /// 3. Each slot's candidates go through WFInfo's own name checks:
     ///    OCR.PartNameValid, Data.GetPartName and
     ///    OCR.GetMaxAllowedLevenshteinDistance (shared code, not copies; the
@@ -147,19 +151,71 @@ namespace WFInfo.MacOS
             attempt.Height = answer["height"]?.Value<int>() ?? 0;
             attempt.SavedPng = answer["saved"]?.Type == JTokenType.String ? answer["saved"].ToString() : null;
 
-            RewardLayoutResult layout = RewardLayout.Analyze(
-                answer, OCR.pixleRewardWidth, OCR.pixleRewardHeight, OCR.pixleRewardYDisplay, lineHeight);
-            attempt.UiScale = layout.UiScale;
-            attempt.UiScaleEstimated = layout.UiScaleEstimated;
-            foreach (string note in layout.Notes) Main.AddLog("Reward layout: " + note);
-
-            foreach (RewardSlot slot in layout.Slots)
+            JObject layout;
+            try
             {
-                string name = MatchSlot(slot);
+                layout = Layout(answer, lineHeight);
+            }
+            catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException || ex is JsonException)
+            {
+                attempt.Error = "reward layout library: " + ex.Message +
+                    " (build headless/WFInfo.Headless.csproj on macOS; it builds headless/macos/layout with cargo)";
+                return attempt;
+            }
+            if (layout["error"] != null)
+            {
+                attempt.Error = "reward layout: " + layout["error"];
+                return attempt;
+            }
+
+            attempt.UiScale = layout["uiScale"]?.Value<double>() ?? 0;
+            attempt.UiScaleEstimated = layout["uiScaleEstimated"]?.Value<bool>() ?? false;
+            foreach (JToken note in layout["notes"] as JArray ?? new JArray())
+                Main.AddLog("Reward layout: " + note);
+
+            foreach (JToken slot in layout["slots"] as JArray ?? new JArray())
+            {
+                string name = MatchSlot(slot["candidates"]?.Values<string>() ?? Array.Empty<string>());
                 if (name != null) attempt.Parts.Add(name);
             }
 
             return attempt;
+        }
+
+        [DllImport("wfinfo_layout", EntryPoint = "wfinfo_layout")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+        private static extern IntPtr NativeLayout(byte[] jsonUtf8);
+
+        [DllImport("wfinfo_layout", EntryPoint = "wfinfo_layout_free")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+        private static extern void NativeLayoutFree(IntPtr text);
+
+        /// <summary>
+        /// Runs the Rust reward layout (libwfinfo_layout.dylib next to the
+        /// runner): helper JSON + WFInfo's layout constants in, slots out, both
+        /// as UTF-8 JSON. The library owns the returned string until it is freed.
+        /// </summary>
+        private static JObject Layout(JToken helperJson, int lineHeight)
+        {
+            var input = new JObject
+            {
+                ["helper"] = helperJson,
+                ["rewardWidth"] = OCR.pixleRewardWidth,
+                ["rewardHeight"] = OCR.pixleRewardHeight,
+                ["rewardY"] = OCR.pixleRewardYDisplay,
+                ["lineHeight"] = lineHeight,
+            };
+            byte[] bytes = Encoding.UTF8.GetBytes(input.ToString(Formatting.None) + "\0");
+            IntPtr result = NativeLayout(bytes);
+            if (result == IntPtr.Zero) throw new JsonException("the layout library returned nothing");
+            try
+            {
+                return JObject.Parse(Marshal.PtrToStringUTF8(result) ?? "{}");
+            }
+            finally
+            {
+                NativeLayoutFree(result);
+            }
         }
 
         /// <summary>
@@ -187,11 +243,11 @@ namespace WFInfo.MacOS
         /// WFInfo's distance threshold, or null. Same checks as WFInfo's reward
         /// pipeline (OCR.ProcessRewardScreenForTest).
         /// </summary>
-        private static string MatchSlot(RewardSlot slot)
+        private static string MatchSlot(IEnumerable<string> candidates)
         {
             string best = null;
             int bestDistance = int.MaxValue;
-            foreach (string candidate in slot.Candidates)
+            foreach (string candidate in candidates)
             {
                 if (string.IsNullOrWhiteSpace(candidate) || !OCR.PartNameValid(candidate)) continue;
                 string name = Main.dataBase.GetPartName(candidate, out int distance, true, out _);
