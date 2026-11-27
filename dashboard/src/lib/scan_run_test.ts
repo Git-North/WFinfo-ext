@@ -118,7 +118,13 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
     // On Windows the app dir is %APPDATA%\WFInfo, as for the .NET app (which
     // ignores WFINFO_DATA_DIR there), so APPDATA points at the fixture too.
     if (windows) Deno.env.set("APPDATA", root);
-    Deno.env.set("WFINFO_SCAN_CMD", `'${stubScript}'`);
+    // On Windows the command goes through the Windows command line to the
+    // MSYS `sh`, which drops the backslashes of `C:\Users\...` even inside
+    // single quotes. Forward slashes (`C:/Users/...`) work in both.
+    const stubCommandPath = windows
+      ? stubScript.replaceAll("\\", "/")
+      : stubScript;
+    Deno.env.set("WFINFO_SCAN_CMD", `'${stubCommandPath}'`);
     const { handler } = await import("../main.ts");
 
     // The /scan page carries the button, wired to the route.
