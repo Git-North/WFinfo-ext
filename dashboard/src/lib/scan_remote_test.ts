@@ -5,6 +5,8 @@ import { assertEquals, assertStringIncludes } from "./testutil.ts";
  * src/main.ts reads the variable at import time, so this test lives in its own
  * file (its own worker) and sets it BEFORE the import. Stub `wlr-randr`,
  * `mmsg` and `wfinfo-mac` stand in for the host tools on Linux and macOS.
+ * Windows cannot run these shell scripts and has no capture discovery, so
+ * there the test checks only that the lists are not withheld.
  */
 Deno.test("WFINFO_SCAN_REMOTE=1 shows the target lists to another host", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_scan_remote_" });
@@ -40,7 +42,8 @@ Deno.test("WFINFO_SCAN_REMOTE=1 shows the target lists to another host", async (
         "fi",
       ].join("\n"),
     );
-    Deno.env.set("PATH", `${tools}:${savedPath}`);
+    const unix = Deno.build.os !== "windows";
+    if (unix) Deno.env.set("PATH", `${tools}:${savedPath}`);
     Deno.env.set("WFINFO_MAC_HELPER", `${tools}/wfinfo-mac`);
     Deno.env.set("WFINFO_DATA_DIR", root);
     Deno.env.set("HOME", root);
@@ -53,9 +56,11 @@ Deno.test("WFINFO_SCAN_REMOTE=1 shows the target lists to another host", async (
     );
     assertEquals(response.status, 200);
     const targets = await response.json();
-    assertEquals(targets.displays.length, 1);
-    assertEquals(targets.windows.length, 1);
-    assertStringIncludes(targets.windows[0].label, "Warframe");
+    if (unix) {
+      assertEquals(targets.displays.length, 1);
+      assertEquals(targets.windows.length, 1);
+      assertStringIncludes(targets.windows[0].label, "Warframe");
+    }
     assertEquals(
       targets.notes.some((n: string) => n.includes("another host")),
       false,
