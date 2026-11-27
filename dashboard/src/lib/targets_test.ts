@@ -507,7 +507,13 @@ Deno.test("macOS discovery without the helper adds a note, never fails", async (
   assertEquals(targets.windows, []);
   assertEquals(calls, [`${HELPER} displays`], "one probe is enough");
   assertEquals(targets.notes.length, 1);
-  assertStringIncludes(targets.notes[0], "build headless on macOS");
+  assertStringIncludes(targets.notes[0], "Build headless on macOS");
+  assertStringIncludes(targets.notes[0], "WFINFO_MAC_HELPER");
+  assertStringIncludes(targets.notes[0], "a scan cannot capture");
+  assertTrue(
+    !targets.notes[0].includes("every display"),
+    "no capture is promised without the helper",
+  );
   assertStringIncludes(targets.notes[0], HELPER);
 
   const automatic = resolveCapture(targets, "", "");

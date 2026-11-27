@@ -503,7 +503,7 @@ async function readMacTargets(
   );
   if (displaysOut.code === null) {
     notes.push(
-      `The wfinfo-mac helper was not found (${helper}); build headless on macOS to list displays and windows. A scan then captures every display.`,
+      `The wfinfo-mac helper was not found (${helper}), so displays and windows cannot be listed and a scan cannot capture. Build headless on macOS, or set WFINFO_MAC_HELPER to the path of the helper.`,
     );
     return empty;
   }
