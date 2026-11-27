@@ -55,8 +55,9 @@ dotnet run --project headless -- --scan --watch                # scan on every r
   (`Flash.FlashDrawScale`, missing = 100 %), as in WFInfo. `--ui-scale
   unknown` estimates it from the text instead; `--ui-scale 0.8` fixes it.
 - A scan writes no temporary files on macOS: the helper captures and reads
-  in memory and writes the capture straight to `scans/` (it becomes
-  `scans/last.png`).
+  in memory and writes the capture straight to `scans/`. Each helper call
+  writes its own `scans/capture-<pid>-<n>.png`; the file of the selected
+  attempt becomes `scans/last.png` and the others are deleted.
 - No real reward screenshot was available when this was written. The scan is
   tested on synthetic screens from `wfinfo-mac synth` (several resolutions,
   UI scales and text colours, wrapped names, squad names, busy background).

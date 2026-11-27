@@ -63,13 +63,15 @@ namespace WFInfo.MacOS
         /// <summary>
         /// One capture-and-read. Exactly one of <paramref name="file"/>,
         /// <paramref name="window"/>, <paramref name="display"/> is used (in that
-        /// order; none = main display). <paramref name="savePath"/> receives the
-        /// capture as PNG (ignored for a file).
+        /// order; none = main display). <paramref name="nextSavePath"/> gives a
+        /// new, unique PNG path for each helper call (ignored for a file). Only
+        /// the returned attempt keeps its capture (<see cref="Attempt.SavedPng"/>);
+        /// the capture of a failed or losing pass is deleted here.
         /// </summary>
-        public Attempt Run(string display, string window, string file, string savePath)
+        public Attempt Run(string display, string window, string file, Func<string> nextSavePath)
         {
             var watch = Stopwatch.StartNew();
-            Attempt first = RunOnce(display, window, file, savePath, _uiScale);
+            Attempt first = RunOnce(display, window, file, NextPath(file, nextSavePath), _uiScale);
             if (_uiScale.HasValue || first.Error != null)
             {
                 first.ElapsedMs = watch.ElapsedMilliseconds;
@@ -82,11 +84,30 @@ namespace WFInfo.MacOS
             // screens at 80 %), so read again with the exact crop for the
             // estimate and keep the pass that found more parts.
             double estimate = Math.Round(first.UiScale * 20) / 20;
-            Attempt second = RunOnce(display, window, file, savePath, estimate);
+            Attempt second = RunOnce(display, window, file, NextPath(file, nextSavePath), estimate);
             Attempt best = second.Error == null && second.Parts.Count >= first.Parts.Count ? second : first;
+            Attempt loser = ReferenceEquals(best, first) ? second : first;
+            DeleteCapture(loser.SavedPng);
+            loser.SavedPng = null;
             best.UiScaleEstimated = true;
             best.ElapsedMs = watch.ElapsedMilliseconds;
             return best;
+        }
+
+        private static string NextPath(string file, Func<string> nextSavePath) =>
+            string.IsNullOrEmpty(file) ? nextSavePath?.Invoke() : null;
+
+        /// <summary>Deletes a helper capture; best-effort.</summary>
+        internal static void DeleteCapture(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
+            catch (Exception ex) when (ex is System.IO.IOException || ex is UnauthorizedAccessException)
+            {
+                // a stray capture is harmless; the next scan uses a new name
+            }
         }
 
         private Attempt RunOnce(string display, string window, string file, string savePath, double? uiScale)
@@ -144,6 +165,7 @@ namespace WFInfo.MacOS
             catch (InvalidOperationException ex)
             {
                 attempt.Error = ex.Message;
+                DeleteCapture(savePath); // the helper may have saved before it failed
                 return attempt;
             }
 
@@ -151,6 +173,7 @@ namespace WFInfo.MacOS
             attempt.Width = answer["width"]?.Value<int>() ?? 0;
             attempt.Height = answer["height"]?.Value<int>() ?? 0;
             attempt.SavedPng = answer["saved"]?.Type == JTokenType.String ? answer["saved"].ToString() : null;
+            if (attempt.SavedPng != savePath) DeleteCapture(savePath); // never leave an untracked file
 
             RewardLayoutResult layout = RewardLayout.Analyze(
                 answer, OCR.pixleRewardWidth, OCR.pixleRewardHeight, OCR.pixleRewardYDisplay, lineHeight);

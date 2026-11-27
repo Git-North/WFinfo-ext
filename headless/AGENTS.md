@@ -63,8 +63,11 @@ code type-checks without WPF/WinForms/Win32.
   with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
   only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
-  and reads in memory and writes the capture only into `scans/` (`--save`;
-  the accepted one becomes `scans/last.png`). The `--ocr tesseract` path gets
+  and reads in memory and writes the capture only into `scans/` (`--save`).
+  Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
+  id + a per-process counter: candidates, retries, both unknown-scale passes
+  and every scan of a watch). The selected attempt's file becomes
+  `scans/last.png`; every other file is deleted. The `--ocr tesseract` path gets
   its capture on the helper's stdout (`capture ... -`). Keep it that way. The
   Linux grim path still uses a per-run temp dir and deletes it.
 - The `rewards` JSON is a contract with `RewardLayout.cs` and
