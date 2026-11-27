@@ -30,6 +30,7 @@ namespace WFInfo.MacOS
                 ("(f) no lines", CaseF),
                 ("(g) 1 slot 1920x1080 u=0.9 unknown, wrapped name, squad", CaseG),
                 ("(h) 5 columns: the 4 that fit the grid stay", CaseH),
+                ("(i) no helper JSON", CaseI),
             };
 
             int failed = 0;
@@ -152,6 +153,13 @@ namespace WFInfo.MacOS
             var r = f.Analyze();
             if (!r.Notes.Any(n => n.Contains("Relic"))) return "no note names the extra column";
             return Expect(f, names);
+        }
+
+        private static string CaseI()
+        {
+            var r = RewardLayout.Analyze(null, RewardWidth, RewardHeight, RewardY, LineHeight);
+            if (r.Slots.Count != 0) return $"expected 0 slots, got {r.Slots.Count}";
+            return r.Notes.Contains("no helper JSON") ? null : "no note for the missing JSON";
         }
 
         // ---- checks ---------------------------------------------------------------

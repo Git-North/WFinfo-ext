@@ -151,13 +151,20 @@ namespace WFInfo.MacOS
             var notes = new List<string>();
             var geo = new Geometry(rewardWidth, rewardHeight, rewardY, lineHeight);
 
-            double w = Num(helperJson?["width"]) ?? 0;
-            double h = Num(helperJson?["height"]) ?? 0;
-            string error = helperJson?["error"]?.Type == JTokenType.String ? (string)helperJson["error"] : null;
+            if (helperJson == null)
+            {
+                notes.Add("no helper JSON");
+                return new RewardLayoutResult(NearestToOne(DefaultScaleMin, DefaultScaleMax), true, 0, 0, 0,
+                    Array.Empty<RewardSlot>(), notes, Array.Empty<ScaleScore>());
+            }
+
+            double w = Num(helperJson["width"]) ?? 0;
+            double h = Num(helperJson["height"]) ?? 0;
+            string error = helperJson["error"]?.Type == JTokenType.String ? (string)helperJson["error"] : null;
             if (!string.IsNullOrWhiteSpace(error)) notes.Add("helper error: " + error);
 
-            double a = Num(helperJson?["uiScaleMin"]) ?? DefaultScaleMin;
-            double b = Num(helperJson?["uiScaleMax"]) ?? DefaultScaleMax;
+            double a = Num(helperJson["uiScaleMin"]) ?? DefaultScaleMin;
+            double b = Num(helperJson["uiScaleMax"]) ?? DefaultScaleMax;
             if (!(a > 0)) a = DefaultScaleMin;
             if (!(b > 0)) b = DefaultScaleMax;
             if (a > b) (a, b) = (b, a);
