@@ -38,6 +38,36 @@ namespace WFInfo.Scan
         [JsonProperty("BestDucats")] public ScanBestDucats BestDucats { get; set; }
         [JsonProperty("PriceCache")] public PriceCacheStats PriceCache { get; set; } = new PriceCacheStats();
         [JsonProperty("Error")] public string Error { get; set; }
+
+        /// <summary>
+        /// One scan's id, shared by its fast and deep records (watch mode
+        /// publishes both). Format: yyyyMMdd_HHmmssfff-pid.
+        /// </summary>
+        [JsonProperty("ScanId")] public string ScanId { get; set; }
+
+        /// <summary>"fast" or "deep" (automatic two-pass scan), "single" (manual).</summary>
+        [JsonProperty("Stage")] public string Stage { get; set; }
+
+        /// <summary>"watch" (EE.log trigger) or "manual" (CLI, hotkey, dashboard).</summary>
+        [JsonProperty("Trigger")] public string Trigger { get; set; }
+
+        /// <summary>Catalog code of <see cref="Error"/> (errors/catalog.json), or null.</summary>
+        [JsonProperty("ErrorCode")] public string ErrorCode { get; set; }
+
+        /// <summary>Catalog name of the code ("Shutter"), or null.</summary>
+        [JsonProperty("ErrorName")] public string ErrorName { get; set; }
+
+        /// <summary>What to do about the error, from the catalog, or null.</summary>
+        [JsonProperty("ErrorAction")] public string ErrorAction { get; set; }
+
+        /// <summary>
+        /// A note on top of the record, e.g. "Last scan found nothing at 14:32"
+        /// when a manual scan found nothing and the last good record was kept.
+        /// </summary>
+        [JsonProperty("Notice")] public string Notice { get; set; }
+
+        /// <summary>Crash report written for this scan (~/-relative path), or null.</summary>
+        [JsonProperty("CrashReport")] public string CrashReport { get; set; }
     }
 
     /// <summary>One reward-screen choice (screen order, <see cref="Index"/> starts at 1).</summary>

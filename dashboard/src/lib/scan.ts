@@ -68,6 +68,22 @@ export interface ScanResult {
   bestDucats: ScanBestDucats | null;
   priceCache: ScanPriceCache;
   error: string | null;
+  /** Catalog code of `error` (errors/catalog.json), e.g. "CAP-001"; null when none. */
+  errorCode: string | null;
+  /** Catalog name of the code, e.g. "Shutter". */
+  errorName: string | null;
+  /** What to do about the error, from the catalog. */
+  errorAction: string | null;
+  /** Shared by a scan's fast and deep records. */
+  scanId: string | null;
+  /** "fast" | "deep" (automatic two-pass scan), "single" (manual). */
+  stage: string | null;
+  /** "watch" (EE.log trigger) or "manual". */
+  trigger: string | null;
+  /** e.g. "Last scan found nothing at 14:32" (manual scan, last good record kept). */
+  notice: string | null;
+  /** Crash report path (~/-relative), when one was written. */
+  crashReport: string | null;
 }
 
 function get(obj: Record<string, unknown>, ...keys: string[]): unknown {
@@ -185,6 +201,14 @@ export function parseScanResult(raw: unknown): ScanResult | null {
     bestDucats: parseBestDucats(get(o, "BestDucats")),
     priceCache: parsePriceCache(get(o, "PriceCache")),
     error: str(get(o, "Error")),
+    errorCode: str(get(o, "ErrorCode")),
+    errorName: str(get(o, "ErrorName")),
+    errorAction: str(get(o, "ErrorAction")),
+    scanId: str(get(o, "ScanId")),
+    stage: str(get(o, "Stage")),
+    trigger: str(get(o, "Trigger")),
+    notice: str(get(o, "Notice")),
+    crashReport: str(get(o, "CrashReport")),
   };
 }
 

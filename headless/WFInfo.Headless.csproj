@@ -55,6 +55,13 @@
     <Compile Include="Platform\*.cs" />
     <Compile Include="Scan\*.cs" />
     <Compile Include="macos\*.cs" />
+    <Compile Include="Errors\*.cs" />
+  </ItemGroup>
+
+  <!-- The shared error catalog (errors/catalog.json), embedded so the runner
+       needs no file next to it on any OS. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\errors\catalog.json" LogicalName="WFInfo.errors.catalog.json" />
   </ItemGroup>
 
   <!--
