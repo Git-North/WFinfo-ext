@@ -1,0 +1,16 @@
+{
+  "tasks": {
+    "dataset": "deno run -A main.ts",
+    "check": "deno check main.ts src tests",
+    "test": "deno test -A tests",
+    "fmt": "deno fmt",
+    "fmt:check": "deno fmt --check",
+    "lint": "deno lint"
+  },
+  "fmt": {
+    "exclude": ["AGENTS.md", "README.md"]
+  },
+  "lint": {
+    "exclude": ["AGENTS.md", "README.md"]
+  }
+}

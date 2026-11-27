@@ -1,0 +1,5 @@
+# The local reward-screen dataset. Everything here stays on this machine: the
+# images belong to others or can show other players' names.
+*
+!.gitignore
+!README.md
