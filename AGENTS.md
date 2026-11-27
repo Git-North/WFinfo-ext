@@ -116,7 +116,9 @@ runners on push to `master`, on pull requests and on `workflow_dispatch`:
   `actionlint`.
 - SonarQube (`.github/workflows/sonarqube.yml`): SonarScanner for .NET around
   the headless build, with `sonar.scanner.scanAll` for TypeScript and other
-  files. Secretless SonarQube Cloud login (OIDC). PRs wait for the quality
+  files. Dashboard coverage: `deno test -A --coverage` → lcov →
+  `sonar.javascript.lcov.reportPaths` (written outside the checkout).
+  Secretless SonarQube Cloud login (OIDC). PRs wait for the quality
   gate. Settings go in `/d:` arguments; do NOT add `sonar-project.properties`
   (the .NET scanner refuses it). `.sonar-config.json` is for the `sonar` CLI.
 

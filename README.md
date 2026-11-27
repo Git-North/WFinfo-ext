@@ -163,6 +163,10 @@ each push to `master`, on each pull request, and on manual start
   also analyzes the dashboard TypeScript and the other text files.
 - C# is analyzed only where the headless build compiles it: the shared core and
   `headless/`. The Windows-only UI sources are not analyzed.
+- The job runs `deno test -A --coverage` in `dashboard/` and sends the lcov
+  report (`sonar.javascript.lcov.reportPaths`), so the quality gate sees the
+  TypeScript coverage. The repository has no .NET unit tests, so there is no
+  C# coverage report.
 - Login is secretless (GitHub OIDC). No `SONAR_TOKEN` secret is necessary for
   SonarQube Cloud. Automatic Analysis must stay off for the project.
 - On a pull request, the job waits for the quality gate. If the gate fails, the

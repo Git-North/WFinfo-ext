@@ -13,6 +13,8 @@ import { assertEquals, assertStringIncludes } from "./testutil.ts";
 Deno.test("POST /scan/run runs the scan command and reports the outcome", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_scan_run_" });
   const savedPath = Deno.env.get("PATH") ?? "";
+  const savedAppData = Deno.env.get("APPDATA");
+  const windows = Deno.build.os === "windows";
   try {
     const appDir = `${root}/WFInfo`;
     await Deno.mkdir(`${appDir}/scans`, { recursive: true });
@@ -45,9 +47,19 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
     // main.ts is imported, because the page render caches the target list.
     const tools = `${root}/tools`;
     await Deno.mkdir(tools, { recursive: true });
+    // Windows runs no shebang scripts. There the script is `<name>.sh` and
+    // `<name>.cmd` (found through PATHEXT) hands it to `sh`, which the
+    // scanner needs anyway; no bare `<name>` exists for the lookup to pick.
     const stub = async (name: string, script: string) => {
-      await Deno.writeTextFile(`${tools}/${name}`, `#!/bin/sh\n${script}\n`);
-      await Deno.chmod(`${tools}/${name}`, 0o755);
+      const file = `${tools}/${name}${windows ? ".sh" : ""}`;
+      await Deno.writeTextFile(file, `#!/bin/sh\n${script}\n`);
+      await Deno.chmod(file, 0o755);
+      if (windows) {
+        await Deno.writeTextFile(
+          `${tools}/${name}.cmd`,
+          `@sh "%~dpn0.sh" %*\r\n`,
+        );
+      }
     };
     await stub(
       "wlr-randr",
@@ -62,7 +74,7 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
         `"monitor":"DP-2","x":1930,"y":44,"width":1900,"height":1026,` +
         `"is_focused":true,"is_visible":true}]}'`,
     );
-    Deno.env.set("PATH", `${tools}:${savedPath}`);
+    Deno.env.set("PATH", `${tools}${windows ? ";" : ":"}${savedPath}`);
 
     // The marker files steer the stand-in command, so one worker can exercise
     // success, failure and a run that is still in flight. It is a real script
@@ -103,6 +115,9 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
     };
 
     Deno.env.set("WFINFO_DATA_DIR", root);
+    // On Windows the app dir is %APPDATA%\WFInfo, as for the .NET app (which
+    // ignores WFINFO_DATA_DIR there), so APPDATA points at the fixture too.
+    if (windows) Deno.env.set("APPDATA", root);
     Deno.env.set("WFINFO_SCAN_CMD", `'${stubScript}'`);
     const { handler } = await import("../main.ts");
 
@@ -302,6 +317,8 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
   } finally {
     Deno.env.set("PATH", savedPath);
     Deno.env.delete("WFINFO_SCAN_CMD");
+    if (savedAppData === undefined) Deno.env.delete("APPDATA");
+    else Deno.env.set("APPDATA", savedAppData);
     await Deno.remove(root, { recursive: true });
   }
 });
