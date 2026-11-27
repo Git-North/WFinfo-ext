@@ -39,11 +39,11 @@ tesseract` keeps WFInfo's original pipeline for comparison and needs
 `mono-libgdiplus` and `tesseract`.
 
 ```bash
-brew install dotnet
+brew install dotnet rust                         # rust: builds the reward layout (macos/layout)
 brew install mono-libgdiplus tesseract           # optional: only for --ocr tesseract, --test, --theme-test
 dotnet build headless/WFInfo.Headless.csproj     # also compiles headless/macos/wfinfo-mac
 dotnet run --project headless -- --selfcheck     # Vision (CoreText sample, no libgdiplus)
-dotnet run --project headless -- --layout-test   # offline reward-layout fixtures
+(cd headless/macos/layout && cargo test)          # reward-layout tests (Rust, dev only)
 dotnet run --project headless -- --scan --no-notify            # capture every display
 dotnet run --project headless -- --scan --watch                # scan on every reward screen
 ```

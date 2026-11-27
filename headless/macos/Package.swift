@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "wfinfo-mac",
             path: ".",
-            exclude: ["MacHelper.cs", "MacNative.cs", "NoTesseractService.cs", "OcrEngines.cs", "RewardLayout.cs", "RewardLayoutTest.cs", "VisionRewardScan.cs", "tests"],
+            exclude: ["MacHelper.cs", "MacNative.cs", "NoTesseractService.cs", "OcrEngines.cs", "VisionRewardScan.cs", "layout", "tests"],
             sources: ["wfinfo-mac.swift"]
         ),
     ]

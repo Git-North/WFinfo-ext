@@ -76,11 +76,31 @@
     <Exec Command="swiftc -O -target $(MacHelperArch)-apple-macos$(MacHelperMinimumOS) -o &quot;$(OutDir)wfinfo-mac&quot; &quot;$(MSBuildThisFileDirectory)macos/wfinfo-mac.swift&quot;" />
   </Target>
 
+  <!--
+    macOS: build the Rust reward layout (headless/macos/layout, a cdylib that
+    VisionRewardScan calls through [DllImport]) and copy it next to the
+    runner. Cargo's output stays under obj/. Other hosts skip this target, so
+    Linux and Windows builds need no Rust toolchain.
+  -->
+  <ItemGroup>
+    <RustLayoutSource Include="$(MSBuildThisFileDirectory)macos/layout/src/**/*.rs;$(MSBuildThisFileDirectory)macos/layout/Cargo.toml;$(MSBuildThisFileDirectory)macos/layout/Cargo.lock" />
+  </ItemGroup>
+
+  <Target Name="BuildRustLayout" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))"
+          Inputs="@(RustLayoutSource)"
+          Outputs="$(OutDir)libwfinfo_layout.dylib">
+    <Exec Command="cargo build --release --locked --manifest-path &quot;$(MSBuildThisFileDirectory)macos/layout/Cargo.toml&quot;"
+          EnvironmentVariables="CARGO_TARGET_DIR=$(MSBuildThisFileDirectory)obj/rust-layout" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)obj/rust-layout/release/libwfinfo_layout.dylib" DestinationFolder="$(OutDir)" />
+  </Target>
+
   <!-- macOS: `dotnet publish` copies only the build's .NET outputs, so copy the
-       helper into the publish folder too. Other hosts skip this target. -->
-  <Target Name="PublishMacHelper" AfterTargets="Publish" DependsOnTargets="BuildMacHelper"
+       helper and the Rust layout library into the publish folder too. Other
+       hosts skip this target. -->
+  <Target Name="PublishMacHelper" AfterTargets="Publish" DependsOnTargets="BuildMacHelper;BuildRustLayout"
           Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-    <Copy SourceFiles="$(OutDir)wfinfo-mac" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutDir)wfinfo-mac;$(OutDir)libwfinfo_layout.dylib" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>
