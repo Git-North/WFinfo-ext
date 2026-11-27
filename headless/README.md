@@ -63,7 +63,7 @@ The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 
 | Command | Effect |
 |---|---|
-| `wfinfo-mac ocr [--fast] [--correction] [--lang en-US] [--device auto\|ane\|gpu\|cpu] <png>... \| - \| --frames` | Vision text, lines, boxes (pixels, top-left origin) and confidences as JSON; images run concurrently. `--frames` reads images from stdin, each a 4-byte big-endian length and the PNG |
+| `wfinfo-mac ocr [--fast] [--correction] [--lang en-US] [--device auto\|ane\|gpu\|cpu] <png>... \| - \| --frames` | Vision text, lines, boxes (pixels, top-left origin) and confidences as JSON; up to 4 images run at the same time, results keep input order. `--frames` reads images from stdin, each a 4-byte big-endian length and the PNG |
 | `wfinfo-mac devices` | compute devices Vision offers for text recognition |
 | `wfinfo-mac displays` / `windows` | displays and on-screen windows (ids for `--output`/`--window`) |
 | `wfinfo-mac capture --display <id> \| --window <id> <out.png> \| -` | one ScreenCaptureKit screenshot; `-` writes the PNG to stdout |

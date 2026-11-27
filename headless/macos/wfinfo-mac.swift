@@ -216,6 +216,9 @@ func recognize(_ image: CGImage, request: RecognizeTextRequest, origin: CGPoint 
     }
 }
 
+/// Images `ocr` reads at the same time.
+let ocrConcurrency = 4
+
 func runOcr(_ raw: ArraySlice<String>) async throws {
     let args = try Arguments(raw, valueFlags: ["--lang", "--device"])
     // Each source is a file path, "-" (one image on stdin) or an in-memory frame.
@@ -235,40 +238,53 @@ func runOcr(_ raw: ArraySlice<String>) async throws {
     let device = try computeDevice(named: deviceChoice)
 
     let started = Date()
-    // One task per image: the requests run concurrently, results keep input order.
-    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
-        for (index, source) in sources.enumerated() {
-            group.addTask {
-                let begin = Date()
-                var entry: [String: Any] = [:]
-                do {
-                    let image: CGImage
-                    switch source {
-                    case .path(let path):
-                        entry["file"] = path
-                        image = try loadImage(path)
-                    case .frame(let number, let data):
-                        entry["frame"] = number
-                        image = try decodeImage(data, label: "frame \(number)")
-                    }
-                    let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
-                    let lines = try await recognize(image, request: request)
-                    entry["width"] = image.width
-                    entry["height"] = image.height
-                    entry["lines"] = lines
-                    entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
-                    entry["error"] = NSNull()
-                } catch {
-                    entry["lines"] = []
-                    entry["text"] = ""
-                    entry["error"] = "\(error)"
-                }
-                entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
-                return (index, entry)
+    // Reads one image; errors go into its entry, so one bad image does not stop the rest.
+    let readOne: @Sendable (Int) async -> (Int, [String: Any]) = { index in
+        let begin = Date()
+        var entry: [String: Any] = [:]
+        do {
+            let image: CGImage
+            switch sources[index] {
+            case .path(let path):
+                entry["file"] = path
+                image = try loadImage(path)
+            case .frame(let number, let data):
+                entry["frame"] = number
+                image = try decodeImage(data, label: "frame \(number)")
             }
+            let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
+            let lines = try await recognize(image, request: request)
+            entry["width"] = image.width
+            entry["height"] = image.height
+            entry["lines"] = lines
+            entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            entry["error"] = NSNull()
+        } catch {
+            entry["lines"] = []
+            entry["text"] = ""
+            entry["error"] = "\(error)"
+        }
+        entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
+        return (index, entry)
+    }
+    // At most ocrConcurrency images are decoded and in Vision at one time, so a
+    // large batch cannot use all memory. Results keep input order.
+    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
+        var next = 0
+        while next < min(ocrConcurrency, sources.count) {
+            let index = next
+            group.addTask { await readOne(index) }
+            next += 1
         }
         var ordered = [[String: Any]](repeating: [:], count: sources.count)
-        for await (index, entry) in group { ordered[index] = entry }
+        for await (index, entry) in group {
+            ordered[index] = entry
+            if next < sources.count {
+                let index = next
+                group.addTask { await readOne(index) }
+                next += 1
+            }
+        }
         return ordered
     }
 
