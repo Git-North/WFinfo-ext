@@ -91,7 +91,7 @@ The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 | `wfinfo-mac devices` | compute devices Vision offers for text recognition |
 | `wfinfo-mac displays` / `windows` | displays and on-screen windows (ids for the helper's `--display`/`--window`) |
 | `wfinfo-mac capture [--display <id> \| --window <id>] <out.png> \| -` | one ScreenCaptureKit screenshot; `-` writes the PNG to stdout |
-| `wfinfo-mac rewards [--display\|--window\|--file] --reward-width 968 --reward-height 235 --reward-y 316 --line-height 48 --ui-scale <u> [--save <png>]` | capture (or read), crop the reward-name rows, read them with Vision; every line in the crop with full-image boxes as JSON |
+| `wfinfo-mac rewards [--display\|--window\|--file] --reward-width 968 --reward-height 235 --reward-y 316 --line-height 48 --ui-scale <u> [--save <png>]` | capture (or read), crop the reward-name rows, read them with Vision (the strip plus narrow per-card tiles when the UI scale is known); every line in the crop with full-image boxes as JSON |
 | `wfinfo-mac selfcheck` | render "Volt Prime Blueprint" with CoreText and read it |
 | `wfinfo-mac synth --out <png> --names "A\|B" [--ui-scale u] [--color #hex] [--squad "p1\|p2"]` | synthetic reward screen for tests |
 | `wfinfo-mac hotkey [--key ctrl+option+s] [--url <scan url>]` | global hotkey that starts a dashboard scan |
