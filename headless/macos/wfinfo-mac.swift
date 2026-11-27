@@ -920,6 +920,17 @@ func parseHotkey(_ text: String) throws -> (UInt32, UInt32) {
     return (UInt32(key), modifiers)
 }
 
+/// The URL for log lines: scheme, host, port and path only. User, password,
+/// query and fragment can hold credentials, so they never reach the log.
+func redactedURL(_ url: URL) -> String {
+    guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "<url>" }
+    parts.user = nil
+    parts.password = nil
+    parts.query = nil
+    parts.fragment = nil
+    return parts.string ?? "<url>"
+}
+
 final class HotkeyState {
     static var url = URL(string: "http://127.0.0.1:8000/scan/run")!
     static var quiet = false
@@ -945,7 +956,7 @@ func triggerScan() {
     }
     HotkeyState.busy = true
     play("Tink")
-    log("hotkey: POST \(HotkeyState.url.absoluteString)")
+    log("hotkey: POST \(redactedURL(HotkeyState.url))")
     var request = URLRequest(url: HotkeyState.url, timeoutInterval: 200)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -990,7 +1001,7 @@ func runHotkey(_ raw: ArraySlice<String>) throws -> Never {
     let status = RegisterEventHotKey(code, modifiers, id, GetApplicationEventTarget(), 0, &ref)
     guard status == noErr else { throw Failure("cannot register \(keyText) (\(status)); another app may own it") }
 
-    log("hotkey \(keyText) registered; press it to scan via \(HotkeyState.url.absoluteString). Ctrl-C stops.")
+    log("hotkey \(keyText) registered; press it to scan via \(redactedURL(HotkeyState.url)). Ctrl-C stops.")
     if HotkeyState.fireOnce { DispatchQueue.main.async { triggerScan() } }
     app.run()
     exit(0)

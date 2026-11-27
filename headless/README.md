@@ -75,7 +75,8 @@ The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 `hotkey` uses a Carbon hotkey, so it needs no Accessibility permission. Run it
 next to the dashboard:
 `wfinfo-mac hotkey --url http://127.0.0.1:8000/scan/run`. `--fire` sends one
-request and exits.
+request and exits. Log lines show the URL without user, password, query or
+fragment.
 
 ## CLI
 
