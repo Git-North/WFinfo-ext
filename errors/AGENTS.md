@@ -50,11 +50,30 @@ what to do. An error without an entry gets a generated code (see below).
 - Scan records and the dashboard show `ErrorCode`, `ErrorName` and the
   description/action from this catalog.
 
+## Implementation Notes
+
+- C#: `headless/Errors/` (see `headless/AGENTS.md`, "Error contract"). The
+  catalog is embedded in the runner. `ErrorCatalog.ForException` gives the
+  catalog entry, a kept foreign code, a SYS- code for a missing native
+  library, or a GEN- code. `CrashReport.Write` writes the report; the quip is
+  picked from the code (FNV-1a), so a code always gets the same one.
+- Scrub (`Redact.Text`): `$HOME` and any `/Users/<name>`, `/home/<name>`,
+  `C:\Users\<name>` become `~`; e-mail → `<e-mail>`; IPv4/IPv6 → `<ip>`
+  (clock times and `Version=1.0.0.0` stay); EE.log lines
+  (`12.345 Sys [Info]: …`) → `<EE.log line removed>`. On a regex timeout the
+  whole text is dropped.
+- Swift helper: `Failure(text, code:)` prints `[<CODE>] text`.
+- Rust layout: LAY-001 for a missing, null, non-object or field-less
+  (`width`, `height`, `lines`) helper answer; LAY-002 for anything else.
+- Dashboard: `dashboard/src/lib/errors.ts`.
+
 ## Verification
 
 - `python3 -I -c "import json; json.load(open('errors/catalog.json'))"` — valid JSON.
 - Each reader's tests check: codes unique, names unique, every area known, and
-  the generated test vectors reproduce.
+  the generated test vectors reproduce: `dotnet test tests/scan-flow/dotnet`,
+  `cd dashboard && deno test -A ../tests/scan-flow/deno` (see
+  `tests/scan-flow/README.md`; the lead moves them to the final layout).
 
 ## Child DOX Index
 
