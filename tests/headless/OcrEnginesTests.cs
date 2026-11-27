@@ -1,5 +1,6 @@
 using System;
 using WFInfo.MacOS;
+using WFInfo.Errors;
 using Xunit;
 
 namespace WFInfo.Headless.Tests
@@ -59,8 +60,8 @@ namespace WFInfo.Headless.Tests
             using var env = CleanEnvironment();
             env.Set(MacHelper.Variable, dir.File("missing"));
 
-            Assert.Contains("names a missing file", Assert.Throws<ArgumentException>(() => OcrEngines.Resolve("auto")).Message);
-            Assert.Contains("names a missing file", Assert.Throws<ArgumentException>(() => OcrEngines.Resolve("vision")).Message);
+            Assert.Equal("SYS-004", Assert.Throws<ScanFailure>(() => OcrEngines.Resolve("auto")).Code);
+            Assert.Equal("SYS-004", Assert.Throws<ScanFailure>(() => OcrEngines.Resolve("vision")).Code);
             Assert.Equal("tesseract", OcrEngines.Resolve("tesseract"));
         }
     }

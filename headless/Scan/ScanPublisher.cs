@@ -153,7 +153,8 @@ namespace WFInfo.Scan
             string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture);
             string path = Path.Combine(ScansDir, "scan-" + stamp + ".json");
             for (int n = 2; File.Exists(path); n++)
-                path = Path.Combine(ScansDir, "scan-" + stamp + "-" + n.ToString(CultureInfo.InvariantCulture) + ".json");
+                // "_2" sorts after the first file ("." < "_"); "-2" would sort before it.
+                path = Path.Combine(ScansDir, "scan-" + stamp + "_" + n.ToString(CultureInfo.InvariantCulture) + ".json");
             File.WriteAllText(path, JsonConvert.SerializeObject(attempt, Formatting.Indented));
 
             foreach (FileInfo old in new DirectoryInfo(ScansDir).GetFiles("*.json")

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using WFInfo.MacOS;
+using WFInfo.Errors;
 using Xunit;
 
 namespace WFInfo.Headless.Tests
@@ -41,7 +42,7 @@ namespace WFInfo.Headless.Tests
         public void An_answer_that_is_not_JSON_is_reported()
         {
             UseHelper("echo 'not json'");
-            var error = Assert.Throws<InvalidOperationException>(() => MacHelper.Run(new[] { "x" }, 10000));
+            var error = Assert.Throws<ScanFailure>(() => MacHelper.Run(new[] { "x" }, 10000));
             Assert.Contains("printed no JSON", error.Message);
         }
 
@@ -88,7 +89,7 @@ namespace WFInfo.Headless.Tests
             UseHelper("exec sleep 30");
             var watch = Stopwatch.StartNew();
 
-            var error = Assert.Throws<InvalidOperationException>(() => MacHelper.RunBytes(new[] { "x" }, 500));
+            var error = Assert.Throws<ScanFailure>(() => MacHelper.RunBytes(new[] { "x" }, 500));
 
             Assert.Contains("timed out after 500 ms", error.Message);
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"took {watch.Elapsed}");
@@ -110,7 +111,7 @@ namespace WFInfo.Headless.Tests
 
             Assert.Null(MacHelper.Path);
             Assert.False(MacHelper.Available);
-            var error = Assert.Throws<InvalidOperationException>(() => MacHelper.RunBytes(new[] { "x" }, 1000));
+            var error = Assert.Throws<ScanFailure>(() => MacHelper.RunBytes(new[] { "x" }, 1000));
             Assert.Contains("names a missing file", error.Message);
         }
 
@@ -118,7 +119,7 @@ namespace WFInfo.Headless.Tests
         public void On_macOS_a_missing_override_fails_the_configuration_check()
         {
             _env.Set(MacHelper.Variable, _dir.File("nowhere"));
-            Assert.Throws<ArgumentException>(MacHelper.CheckConfigured);
+            Assert.Equal("SYS-004", Assert.Throws<ScanFailure>(MacHelper.CheckConfigured).Code);
         }
 
         [Fact]

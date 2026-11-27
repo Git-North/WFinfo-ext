@@ -2,9 +2,9 @@ import {
   assertEquals,
   assertStringIncludes,
   streamText,
-} from "../../../dashboard/src/lib/testutil.ts";
-import { resolveAppDir } from "../../../dashboard/src/lib/fsdata.ts";
-import { logHub } from "../../../dashboard/src/lib/logwatch.ts";
+} from "../../dashboard/src/lib/testutil.ts";
+import { resolveAppDir } from "../../dashboard/src/lib/fsdata.ts";
+import { logHub } from "../../dashboard/src/lib/logwatch.ts";
 
 /**
  * The "scan" source of GET /api/logs/events: each publish of
@@ -42,7 +42,7 @@ Deno.test("scan source: each latest.json publish is a change event", async () =>
 
     Deno.env.set("WFINFO_DATA_DIR", root);
     Deno.env.set("HOME", root);
-    const { handler } = await import("../../../dashboard/src/main.ts");
+    const { handler } = await import("../../dashboard/src/main.ts");
 
     const resp = await handler(
       new Request("http://localhost/api/logs/events?source=scan"),

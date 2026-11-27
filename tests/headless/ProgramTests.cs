@@ -89,7 +89,9 @@ namespace WFInfo.Headless.Tests
             _env.Set(MacHelper.Variable, Helpers.Script(_dir, "echo 'wfinfo-mac: no Vision' >&2; exit 1"));
             (int broken, string brokenOutput) = await Run("--selfcheck");
             Assert.True(broken == 2, brokenOutput);
-            Assert.Contains("Self-check failed: no Vision", brokenOutput);
+            // A helper failure with no catalog code gets a generated GEN- code.
+            Assert.Contains("ERROR GEN-", brokenOutput);
+            Assert.Contains("no Vision", brokenOutput);
         }
 
         [MacSandboxFact]

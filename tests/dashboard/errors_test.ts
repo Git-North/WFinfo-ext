@@ -1,11 +1,11 @@
 // Tests for dashboard/src/lib/errors.ts (catalog lookup, generated codes,
 // error block). Offline; no app data is read or written.
-import catalog from "../../../errors/catalog.json" with { type: "json" };
+import catalog from "../../errors/catalog.json" with { type: "json" };
 import {
   assertEquals,
   assertStringIncludes,
   assertTrue,
-} from "../../../dashboard/src/lib/testutil.ts";
+} from "../../dashboard/src/lib/testutil.ts";
 import {
   AREAS,
   errorBlockHtml,
@@ -13,7 +13,7 @@ import {
   fnv1a32,
   generated,
   lookup,
-} from "../../../dashboard/src/lib/errors.ts";
+} from "../../dashboard/src/lib/errors.ts";
 
 Deno.test("catalog codes and names are unique and every area is known", () => {
   assertEquals(new Set(ERRORS.map((e) => e.code)).size, ERRORS.length);

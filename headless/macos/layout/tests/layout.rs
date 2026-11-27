@@ -8,7 +8,7 @@
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString};
 use std::ptr;
-use wfinfo_layout::{layout_json, wfinfo_layout, wfinfo_layout_free};
+use wfinfo_layout::{INPUT_INVALID, LAYOUT_FAILED, layout_json, wfinfo_layout, wfinfo_layout_free};
 
 // OCR.pixleRewardWidth, pixleRewardHeight, pixleRewardYDisplay, pixelRewardLineHeight.
 const REWARD_WIDTH: i32 = 968;

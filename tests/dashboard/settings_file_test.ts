@@ -2,10 +2,7 @@
  * wfinfo-ext-settings.json: read rules, round trip and the atomic write
  * (dashboard/src/lib/settings.ts). Every test runs on a temporary app dir.
  */
-import {
-  assertEquals,
-  assertTrue,
-} from "../../../dashboard/src/lib/testutil.ts";
+import { assertEquals, assertTrue } from "../../dashboard/src/lib/testutil.ts";
 import {
   DEFAULT_SETTINGS,
   parseSettings,
@@ -15,7 +12,7 @@ import {
   settingsPath,
   updateSettings,
   writeSettings,
-} from "../../../dashboard/src/lib/settings.ts";
+} from "../../dashboard/src/lib/settings.ts";
 import {
   guardNotRealAppDir,
   listNames,

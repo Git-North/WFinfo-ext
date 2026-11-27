@@ -3,7 +3,7 @@
  * user's real WFInfo app dir. The guard fails loudly instead of touching the
  * real wfinfo-ext-settings.json.
  */
-import { resolveAppDir } from "../../../dashboard/src/lib/fsdata.ts";
+import { resolveAppDir } from "../../dashboard/src/lib/fsdata.ts";
 
 /** The real app dirs of this user: the resolved one and both OS defaults. */
 function realAppDirs(): string[] {

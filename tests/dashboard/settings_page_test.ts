@@ -8,9 +8,9 @@ import {
   assertEquals,
   assertStringIncludes,
   assertTrue,
-} from "../../../dashboard/src/lib/testutil.ts";
-import { resolveAppDir } from "../../../dashboard/src/lib/fsdata.ts";
-import { settingsFormHtml } from "../../../dashboard/src/lib/view.ts";
+} from "../../dashboard/src/lib/testutil.ts";
+import { resolveAppDir } from "../../dashboard/src/lib/fsdata.ts";
+import { settingsFormHtml } from "../../dashboard/src/lib/view.ts";
 import { guardNotRealAppDir, loopback } from "./settings_testutil.ts";
 
 Deno.test("settingsFormHtml shows both switches and escapes the warning", () => {
@@ -56,7 +56,7 @@ Deno.test("main.ts serves the switches, POST /settings and GET /api/settings", a
     guardNotRealAppDir(appDir, real);
     assertTrue(appDir.startsWith(root), appDir);
 
-    const { handler } = await import("../../../dashboard/src/main.ts");
+    const { handler } = await import("../../dashboard/src/main.ts");
 
     const before = await (await handler(
       new Request("http://localhost/api/settings"),

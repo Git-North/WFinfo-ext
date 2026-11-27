@@ -6,13 +6,13 @@
 import {
   assertEquals,
   assertStringIncludes,
-} from "../../../dashboard/src/lib/testutil.ts";
+} from "../../dashboard/src/lib/testutil.ts";
 import {
   apiSettings,
   readSettings,
   settingsPath,
   settingsRoute,
-} from "../../../dashboard/src/lib/settings.ts";
+} from "../../dashboard/src/lib/settings.ts";
 import {
   listNames,
   loopback,
