@@ -68,6 +68,7 @@ import {
 } from "./lib/view.ts";
 import { parseScanResult, resolveBest, type ScanResult } from "./lib/scan.ts";
 import { Scanner } from "./lib/scanner.ts";
+import { generated } from "./lib/errors.ts";
 import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
 import {
   denoRunner,
@@ -471,6 +472,8 @@ function toScanView(scan: ScanResult, screenshot: boolean): ScanView {
     best: bestAt >= 0 ? choices[bestAt] : null,
     priceCache: scan.priceCache,
     error: scan.error,
+    errorCode: scan.errorCode,
+    crashReport: scan.crashReport,
   };
 }
 
@@ -602,7 +605,10 @@ async function scanRun(
   // list takes time, and two requests that overlap there must not both start a
   // scan. The reservation is released when the run (or the failure) is done.
   if (scanner.busy || scanStarting) {
-    return json({ error: "A scan is already running." }, 409);
+    return json(
+      { error: "A scan is already running.", code: "SCN-002" },
+      409,
+    );
   }
   scanStarting = true;
 
@@ -633,6 +639,11 @@ async function scanRun(
       : outcome.status === "failed"
       ? `The scan command failed (exit code ${outcome.exitCode}).`
       : "The scan command could not be started.";
+    const code = outcome.status === "timeout"
+      ? "SCN-003"
+      : outcome.status === "ok" || outcome.status === "failed"
+      ? undefined
+      : "DSH-001";
 
     // The page script asks for JSON and refreshes the body itself; a plain
     // form post (no script) gets a redirect back to the page, or the failure
@@ -640,10 +651,10 @@ async function scanRun(
     if (!wantsJson(req)) {
       return outcome.status === "ok"
         ? redirect("/scan")
-        : html(errorPageHtml(`${message} ${outcome.output}`));
+        : html(errorPageHtml(`${message} ${outcome.output}`, code));
     }
     return json(
-      { ...outcome, ok: outcome.status === "ok", message },
+      { ...outcome, ok: outcome.status === "ok", message, code },
       outcome.status === "ok" ? 200 : 502,
     );
   } finally {
@@ -812,7 +823,15 @@ async function handler(
     console.error(
       `request failed: ${path} — ${err instanceof Error ? err.message : err}`,
     );
-    return html(errorPageHtml("The server could not complete the request."));
+    const failure = generated(
+      `${err instanceof Error ? err.name : typeof err}|dashboard.handler`,
+    );
+    return html(
+      errorPageHtml(
+        `The server could not complete the request (${failure.code}).`,
+        failure,
+      ),
+    );
   }
 }
 
