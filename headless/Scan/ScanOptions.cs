@@ -130,7 +130,7 @@ namespace WFInfo.Scan
                         break;
                     case "--window":
                         string window = RequireValue(args, ref i, arg);
-                        if (!Regex.IsMatch(window, @"^\d{1,12}$"))
+                        if (!Regex.IsMatch(window, @"^\d{1,12}$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
                             throw new ArgumentException($"--window expects a numeric window id, got '{window}'");
                         options.Window = window;
                         break;
@@ -206,6 +206,9 @@ namespace WFInfo.Scan
             if (options.Once) options.Watch = true;
             if (options.Watch && options.File != null)
                 throw new ArgumentException("--watch reads the live screen; --file cannot be combined with it");
+            // macOS captures a window by id, not by a layout region (ScreenCaptureKit).
+            if (OperatingSystem.IsMacOS() && options.Region != null)
+                throw new ArgumentException("--region is Linux-only; on macOS use --window <id> or --output <display id>");
 
             return options;
         }
@@ -231,12 +234,20 @@ namespace WFInfo.Scan
         /// <summary>grim -g accepts "X,Y WxH" in layout coordinates; anything else is a typo.</summary>
         private static readonly Regex RegionPattern = new Regex(
             @"^\s*(-?\d+)\s*,\s*(-?\d+)\s+(\d+)\s*[xX]\s*(\d+)\s*$",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
         /// <summary>Normalizes a grim region; throws <see cref="ArgumentException"/> on bad input.</summary>
         private static string ParseRegion(string value)
         {
-            Match match = RegionPattern.Match(value ?? string.Empty);
+            Match match;
+            try
+            {
+                match = RegionPattern.Match(value ?? string.Empty);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                match = Match.Empty; // a timeout is an invalid region
+            }
             int width = 0;
             int height = 0;
             bool sized = match.Success

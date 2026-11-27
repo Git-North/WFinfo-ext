@@ -218,14 +218,21 @@ namespace WFInfo.Scan
             }
 
             // The file is Valve's KeyValues format: "path"  "/mnt/games/Steam"
-            foreach (Match match in LibraryPathPattern.Matches(text))
+            var paths = new List<string>();
+            try
             {
-                yield return match.Groups[1].Value;
+                foreach (Match match in LibraryPathPattern.Matches(text)) paths.Add(match.Groups[1].Value);
             }
+            catch (RegexMatchTimeoutException)
+            {
+                yield break; // treat the file as listing no extra libraries
+            }
+            foreach (string path in paths) yield return path;
         }
 
         private static readonly Regex LibraryPathPattern = new Regex(
-            "\"path\"\\s+\"([^\"]+)\"", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            "\"path\"\\s+\"([^\"]+)\"", RegexOptions.Compiled | RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
 
         /// <summary>The EE.log inside one Steam root's Warframe prefix, or null.</summary>
         private static string FindInSteamRoot(string steamRoot)

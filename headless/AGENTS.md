@@ -37,6 +37,8 @@ code type-checks without WPF/WinForms/Win32.
   the compositor's own client geometry, so no conversion is needed. On macOS,
   `--window <id>` (a CGWindowID) captures one window, `--output <id>` (a
   CGDirectDisplayID) one display, else every display, main display first.
+  macOS refuses `--region` at option parse (exit 2): it is a Linux layout
+  region, and a display capture in its place is the wrong target.
 - `--watch` scans automatically: `ScanWatcher` tails EE.log and runs a scan per
   "Got rewards" line. The game writes that line before the panel is on screen,
   so a triggered scan re-captures until a part is recognised (or `--wait`
@@ -59,10 +61,15 @@ code type-checks without WPF/WinForms/Win32.
   runs), `MacNative.cs` (libgdiplus and Tesseract links for the developer
   modes only). The csproj target `BuildMacHelper` compiles the helper
   with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
-  only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+  only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target
+  `PublishMacHelper` copies it into the `dotnet publish` folder, also on
+  macOS only.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
-  and reads in memory and writes the capture only into `scans/` (`--save`;
-  the accepted one becomes `scans/last.png`). The `--ocr tesseract` path gets
+  and reads in memory and writes the capture only into `scans/` (`--save`).
+  Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
+  id + a per-process counter: candidates, retries, both unknown-scale passes
+  and every scan of a watch). The selected attempt's file becomes
+  `scans/last.png`; every other file is deleted. The `--ocr tesseract` path gets
   its capture on the helper's stdout (`capture ... -`). Keep it that way. The
   Linux grim path still uses a per-run temp dir and deletes it.
 - The `rewards` JSON is a contract with `RewardLayout.cs` and
@@ -90,6 +97,10 @@ code type-checks without WPF/WinForms/Win32.
   prefer removing the Windows-only dependency from the shared file instead.
 - `Scan/` and `macos/` are real feature code, not seams — seams stay in
   `Platform/`.
+- `wfinfo-mac rewards` returns every line in its generous crop (squad names
+  too), with full-image boxes; the caller drops lines outside the name rows.
+- On macOS the default `--selfcheck` proves the Vision stack only, not
+  WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
   `notify-send` (verdict); the flake's dev shell and the `.#scan` app put all
   three on PATH, so never assume they exist system-wide.
@@ -147,6 +158,8 @@ code type-checks without WPF/WinForms/Win32.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+    Trimmed; blank counts as unset. On macOS a missing file is an error
+    (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
 - Environment for OCR data dirs derives from the OS XDG config dir when
   `WFINFO_DATA_DIR` is unset — do not assume Windows `%APPDATA%`. On macOS the
   app dir is `~/Library/Application Support/WFInfo`.
@@ -181,7 +194,8 @@ code type-checks without WPF/WinForms/Win32.
   them.
   The first Vision call of a new helper binary prepares Apple's models (40–50 s
   once); later calls take about 190 ms (one image) or 250 ms (eight in one
-  call).
+  call). `VisionRewardScan` gives each helper call 120 s for that first call;
+  keep it under the dashboard's 180 s scan deadline.
 - macOS capture needs Screen Recording for the app that starts the scan (the
   terminal, or the app that runs the dashboard). Without it the capture error
   names the setting.
