@@ -4,7 +4,9 @@
  *
  * The .NET headless runner treats WFINFO_DATA_DIR as an XDG_CONFIG_HOME
  * override (see headless/Program.cs ConfigureEnvironment), so the app dir is
- * `<override>/WFInfo`; on Windows it is `%APPDATA%\WFInfo`. All file paths use
+ * `<override>/WFInfo`; on Windows it is `%APPDATA%\WFInfo`; on macOS it is
+ * `~/Library/Application Support/WFInfo` and the override does not apply. All
+ * file paths use
  * the OS separator; on Linux that is "/" and on Windows the .NET app writes
  * backslash paths that Deno normalizes.
  */
@@ -18,10 +20,21 @@ export interface LogEntry {
   message: string;
 }
 
-/** Resolve the WFInfo application-data directory from the environment. */
+/**
+ * Resolve the WFInfo application-data directory from the environment.
+ *
+ * On macOS .NET maps the application-data folder to
+ * `~/Library/Application Support` and does not read XDG_CONFIG_HOME, so the
+ * headless runner ignores WFINFO_DATA_DIR there; this function does the same.
+ * `os` defaults to the host OS, so tests can choose any platform.
+ */
 export function resolveAppDir(
   env: Record<string, string | undefined>,
+  os: string = Deno.build.os,
 ): string {
+  if (os === "darwin") {
+    return `${env.HOME ?? "/tmp"}/Library/Application Support/WFInfo`;
+  }
   const appData = env.APPDATA;
   // Forward slashes are accepted by Deno on Windows too, so one join rule
   // works on every platform (the .NET app uses backslashes; stat/read accept
