@@ -30,6 +30,9 @@ namespace WFInfo.Scan
 
         /// <summary>Confidence of the automatic theme probe (0 when a theme was forced).</summary>
         [JsonProperty("ThemeWeight")] public double ThemeWeight { get; set; }
+
+        /// <summary>Text engine that read the part names: "vision-layout" (macOS, Apple Vision on the name rows) or "tesseract".</summary>
+        [JsonProperty("OcrEngine")] public string OcrEngine { get; set; }
         [JsonProperty("Choices")] public List<ScanChoice> Choices { get; set; } = new List<ScanChoice>();
         [JsonProperty("Best")] public ScanBest Best { get; set; }
         [JsonProperty("BestDucats")] public ScanBestDucats BestDucats { get; set; }

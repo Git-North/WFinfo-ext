@@ -5,10 +5,13 @@ using System.Drawing.Text;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Tesseract;
+using WFInfo.MacOS;
 using WFInfo.Scan;
 using WFInfo.Services.HDRDetection;
 using WFInfo.Services.WarframeProcess;
@@ -20,7 +23,7 @@ using WFInfoMain = WFInfo.Main;
 namespace WFInfo
 {
     /// <summary>
-    /// WFInfo.Headless — native Linux entry point for WFInfo's real OCR/theme core.
+    /// WFInfo.Headless — native Linux/macOS entry point for WFInfo's real OCR/theme core.
     ///
     /// The sources under headless/Platform plus the linked WFInfo core files form a
     /// net9.0 console build with no WPF/WinForms/Win32 dependencies, so the OCR test
@@ -31,14 +34,17 @@ namespace WFInfo
     ///   WFInfo.Headless map.json [results.json]          (flag is optional)
     ///   WFInfo.Headless --theme-debug <folder> [uiScale] theme detection runner
     ///   WFInfo.Headless --theme-test  <folder> [uiScale] alias of --theme-debug
-    ///   WFInfo.Headless --selfcheck                      end-to-end OCR engine check
+    ///   WFInfo.Headless --selfcheck [--ocr <engine>]     end-to-end OCR engine check
     ///   WFInfo.Headless --scan [options]                 reward-screen scan (capture + OCR + prices)
+    ///   WFInfo.Headless --scan --watch [options]         scan on every reward screen (EE.log watch)
     ///
     /// Environment:
     ///   WFINFO_NATIVE_LIBS  directory with libtesseract50.so + libleptonica-1.82.0.so
     ///                       (see nix flake devShell; on Windows the app downloads them)
     ///   WFINFO_DATA_DIR     override for the application-data root (defaults to the
     ///                       OS XDG config dir; tessdata + market DBs land below it)
+    ///   WFINFO_EE_LOG       EE.log path for --watch (else the Steam/Proton prefix
+    ///                       is searched)
     /// </summary>
     internal static class HeadlessProgram
     {
@@ -80,12 +86,13 @@ namespace WFInfo
                     double.TryParse(clean[2], System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out double scale)
                     ? scale : -1;
+                if (!MacNative.EnableGdiPlus()) return ExitFatal;
                 return ThemeTestRunner.Run(folder, overrideScale);
             }
 
             if (first.Equals("--selfcheck", StringComparison.OrdinalIgnoreCase))
             {
-                return await RunSelfCheck().ConfigureAwait(false);
+                return await RunSelfCheck(clean.Skip(1).ToArray()).ConfigureAwait(false);
             }
 
             if (first.Equals("--scan", StringComparison.OrdinalIgnoreCase))
@@ -110,6 +117,10 @@ namespace WFInfo
             string nativeLibs = Environment.GetEnvironmentVariable("WFINFO_NATIVE_LIBS");
             if (!string.IsNullOrEmpty(nativeLibs))
                 TesseractEnviornment.CustomSearchPath = nativeLibs;
+
+            // macOS without Nix: libgdiplus comes from Homebrew (no-op on other
+            // systems). Tesseract is linked later, only when it runs.
+            MacNative.Configure();
         }
 
         private static async Task<int> RunOcrSuite(string[] args)
@@ -137,7 +148,8 @@ namespace WFInfo
                 return ExitFatal;
             }
 
-            WarnIfNativeLibsMissing();
+            if (!MacNative.EnableGdiPlus()) return ExitFatal;
+            PrepareTesseract();
 
             try
             {
@@ -223,7 +235,12 @@ namespace WFInfo
                 return ExitAllPassed;
             }
 
-            WarnIfNativeLibsMissing();
+            if (options.Ocr == "tesseract")
+            {
+                // WFInfo's own extraction: System.Drawing (libgdiplus) + Tesseract.
+                if (!MacNative.EnableGdiPlus()) return ExitFatal;
+                PrepareTesseract();
+            }
 
             try
             {
@@ -238,14 +255,25 @@ namespace WFInfo
                 {
                     marketItems = LoadLocalJson(ScanPaths.MarketItems, "market_items.json"),
                     marketData = LoadLocalJson(ScanPaths.MarketData, "market_data.json"),
+                    nameData = LoadLocalJson(ScanPaths.NameData, "name_data.json"),
                 };
                 WFInfoMain.dataBase = data;
 
-                var tesseractService = new TesseractService();
+                // macOS Vision layout: the helper captures and reads the screen, so
+                // no Tesseract engine, no tessdata and no System.Drawing are used.
+                VisionRewardScan vision = null;
+                if (options.Ocr == "vision")
+                {
+                    double? uiScale = options.UiScaleMode == "auto"
+                        ? EeLog.ReadUiScale(options.LogPath)
+                        : options.UiScale;
+                    vision = new VisionRewardScan(uiScale);
+                }
+                var tesseractService = vision == null ? new TesseractService() : null;
                 try
                 {
                     OCR.InitForTest(
-                        tesseractService,
+                        (ITesseractService)tesseractService ?? new NoTesseractService(),
                         ApplicationSettings.GlobalReadonlySettings,
                         windowService,
                         new HeadlessHDRDetector(false));
@@ -260,19 +288,79 @@ namespace WFInfo
                             Console.Error.WriteLine("WARNING: " + sheetWarning);
 
                         var cache = new PriceCache(ScanPaths.PriceCache, http);
-                        var runner = new ScanRunner(options, windowService, sheet, cache, settings);
-                        return await runner.RunAsync().ConfigureAwait(false);
+                        var runner = new ScanRunner(options, windowService, sheet, cache, settings, vision);
+
+                        if (!options.Watch)
+                            return await runner.RunAsync().ConfigureAwait(false);
+
+                        return await WatchAsync(options, runner).ConfigureAwait(false);
                     }
                 }
                 finally
                 {
-                    tesseractService.Dispose();
+                    tesseractService?.Dispose();
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"Scan failed: {ex}");
                 return ExitFatal;
+            }
+        }
+
+        /// <summary>
+        /// Watch mode: tail Warframe's EE.log and run a scan for every reward
+        /// screen the game announces. The OCR engines, market sheet and price
+        /// cache are already built by the caller, so each triggered scan is one
+        /// capture plus the OCR — the reason an answer arrives in well under a
+        /// second. Ctrl-C (or SIGTERM) stops the watch.
+        /// </summary>
+        private static async Task<int> WatchAsync(ScanOptions options, ScanRunner runner)
+        {
+            string logPath = EeLog.Resolve(options.LogPath);
+            if (logPath == null)
+            {
+                Console.Error.WriteLine(
+                    options.LogPath != null
+                        ? $"ERROR: no such log file: {Path.GetFullPath(options.LogPath)}"
+                        : "ERROR: Warframe's EE.log was not found. Start the game once, "
+                          + "or pass --log <path>. Looked in:");
+                if (options.LogPath == null)
+                {
+                    foreach (string candidate in EeLog.CandidatePaths())
+                        Console.Error.WriteLine("  " + candidate);
+                }
+                return ExitFatal;
+            }
+
+            // Ctrl-C and SIGTERM both stop the watch between scans, so a kill
+            // never lands in the middle of writing a scan record. The handlers
+            // are detached before the source is disposed: a ProcessExit-time
+            // signal would otherwise cancel a disposed source and abort.
+            var cancellation = new CancellationTokenSource();
+            ConsoleCancelEventHandler onCancelKeyPress = (_, e) =>
+            {
+                e.Cancel = true;
+                cancellation.Cancel();
+            };
+            Console.CancelKeyPress += onCancelKeyPress;
+            using PosixSignalRegistration term = PosixSignalRegistration.Create(
+                PosixSignal.SIGTERM,
+                context =>
+                {
+                    context.Cancel = true;
+                    cancellation.Cancel();
+                });
+
+            try
+            {
+                var watcher = new ScanWatcher(logPath, options, runner.RunAsync, Console.Out);
+                return await watcher.RunAsync(cancellation.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                Console.CancelKeyPress -= onCancelKeyPress;
+                cancellation.Dispose();
             }
         }
 
@@ -301,15 +389,27 @@ namespace WFInfo
             Console.WriteLine("Usage: WFInfo.Headless --scan [options]");
             Console.WriteLine();
             Console.WriteLine("  --file <png>      OCR this screenshot instead of capturing the screen");
-            Console.WriteLine("  --output <name>   grim output (monitor) to capture; default tries every output");
-            Console.WriteLine("  --region \"X,Y WxH\" capture one layout region (a window's frame), e.g. \"10,44 1900x1026\"");
-            Console.WriteLine("                    --file wins over --region, --region over --output");
+            Console.WriteLine("  --output <name>   grim output (Linux) or display id (macOS) to capture;");
+            Console.WriteLine("                    default tries every output");
+            Console.WriteLine("  --region \"X,Y WxH\" capture one layout region (a window's frame), e.g. \"10,44 1900x1026\" (Linux)");
+            Console.WriteLine("  --window <id>     capture one window by its id (macOS, see `wfinfo-mac windows`)");
+            Console.WriteLine("                    --file wins over --window/--region, those over --output");
+            Console.WriteLine("  --ocr <engine>    auto | vision | tesseract (default auto: Vision on macOS)");
+            Console.WriteLine("  --ui-scale <s>    macOS Vision scan: auto (EE.cfg, default) | unknown (estimate) | 0.5-1.25");
             Console.WriteLine("  --theme <name>    force a UI theme instead of the automatic probe");
             Console.WriteLine("                    (auto | " + ScanOptions.ThemeNames() + ")");
             Console.WriteLine("  --refresh         ignore the local price-cache TTL for this run");
             Console.WriteLine("  --ttl <hours>     price-cache lifetime in hours (default 6)");
             Console.WriteLine("  --no-notify       do not post the desktop notification");
             Console.WriteLine("  --json            print the scan record to stdout");
+            Console.WriteLine();
+            Console.WriteLine("Watch mode (scan automatically when the game shows a reward screen):");
+            Console.WriteLine("  --watch           tail Warframe's EE.log and scan on every reward screen");
+            Console.WriteLine("  --once            scan on the first trigger, then exit");
+            Console.WriteLine("  --log <path>      EE.log to watch (default: the Steam/Proton prefix,"
+                + " or $WFINFO_EE_LOG)");
+            Console.WriteLine("  --wait <seconds>  re-capture until a part is recognised (default 10 in watch)");
+            Console.WriteLine("  --cooldown <s>    ignore further triggers for this long after a scan (default 5)");
         }
 
         /// <summary>
@@ -374,14 +474,63 @@ namespace WFInfo
 
         /// <summary>
         /// Renders "Volt Prime Blueprint" through the real OCR pipeline to prove the
-        /// full native stack (libtesseract + leptonica + tessdata + image handling)
-        /// works on this machine — no game screenshot required.
+        /// full native stack works on this machine — no game screenshot required.
+        /// Tesseract: libtesseract + leptonica + tessdata + System.Drawing. Vision
+        /// (macOS): the wfinfo-mac helper renders with CoreText and reads with
+        /// Apple's text recognizer; no System.Drawing.
+        /// `--ocr` picks the engine (default auto: Vision on macOS).
         /// </summary>
-        private static async Task<int> RunSelfCheck()
+        private static async Task<int> RunSelfCheck(string[] args)
         {
             Console.WriteLine("WFInfo Headless Self-Check");
             Console.WriteLine("===========================");
-            WarnIfNativeLibsMissing();
+
+            string engineName;
+            try
+            {
+                string requested = null;
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (args[i].Equals("--ocr", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        requested = args[++i];
+                    else
+                        throw new ArgumentException("Unknown self-check option: " + args[i]);
+                }
+                engineName = OcrEngines.Resolve(requested);
+            }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine("ERROR: " + ex.Message);
+                return ExitFatal;
+            }
+
+            Console.WriteLine("OCR engine: " + engineName);
+            string debugOut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WFInfo", "selfcheck.png");
+            Directory.CreateDirectory(Path.GetDirectoryName(debugOut));
+
+            if (engineName == "vision")
+            {
+                // The helper renders the sample with CoreText and reads it with
+                // Vision: no System.Drawing (libgdiplus) in this process.
+                try
+                {
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
+                    string device = (Environment.GetEnvironmentVariable("WFINFO_VISION_DEVICE") ?? "auto").Trim().ToLowerInvariant();
+                    JToken answer = MacHelper.Run(new[] { "selfcheck", "--save", debugOut, "--device", device }, 60000);
+                    string visionText = (answer["text"]?.ToString() ?? string.Empty).Trim();
+                    Console.WriteLine($"Vision device: {device}; Vision time {answer["ms"]} ms, call {watch.ElapsedMilliseconds} ms");
+                    return ReportSelfCheck(visionText);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Console.Error.WriteLine("Self-check failed: " + ex.Message);
+                    return ExitFatal;
+                }
+            }
+
+            // Tesseract: WFInfo's own System.Drawing + Tesseract stack.
+            if (!MacNative.EnableGdiPlus()) return ExitFatal;
+            PrepareTesseract();
 
             try
             {
@@ -401,23 +550,18 @@ namespace WFInfo
 
                     using (var image = RenderSampleImage())
                     {
-                        string debugOut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WFInfo", "selfcheck.png");
-                        Directory.CreateDirectory(Path.GetDirectoryName(debugOut));
                         image.Save(debugOut, System.Drawing.Imaging.ImageFormat.Png);
 
                         string text = string.Empty;
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
                         foreach (var engine in tesseractService.Engines)
                         {
                             if (engine == null) continue;
                             text = OCR.GetTextFromImage(image, engine);
                             if (!string.IsNullOrWhiteSpace(text)) break;
                         }
-                        text = (text ?? string.Empty).Trim();
-
-                        Console.WriteLine($"Recognized text: \"{text}\"");
-                        bool ok = text.Contains("Volt", StringComparison.OrdinalIgnoreCase);
-                        Console.WriteLine(ok ? "SELF-CHECK PASSED" : "SELF-CHECK FAILED (expected text containing 'Volt')");
-                        return ok ? ExitAllPassed : ExitSomeFailed;
+                        Console.WriteLine($"Tesseract time {watch.ElapsedMilliseconds} ms");
+                        return ReportSelfCheck((text ?? string.Empty).Trim());
                     }
                 }
                 finally
@@ -430,6 +574,14 @@ namespace WFInfo
                 Console.Error.WriteLine($"Self-check failed: {ex}");
                 return ExitFatal;
             }
+        }
+
+        private static int ReportSelfCheck(string text)
+        {
+            Console.WriteLine($"Recognized text: \"{text}\"");
+            bool ok = text.Contains("Volt", StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine(ok ? "SELF-CHECK PASSED" : "SELF-CHECK FAILED (expected text containing 'Volt')");
+            return ok ? ExitAllPassed : ExitSomeFailed;
         }
 
         private static Bitmap RenderSampleImage()
@@ -458,7 +610,8 @@ namespace WFInfo
             {
                 var installed = new InstalledFontCollection();
                 string preferred = installed.Families.FirstOrDefault(f =>
-                    f.Name.Equals("DejaVu Sans", StringComparison.OrdinalIgnoreCase))?.Name;
+                    f.Name.Equals("DejaVu Sans", StringComparison.OrdinalIgnoreCase) ||
+                    f.Name.Equals("Helvetica", StringComparison.OrdinalIgnoreCase))?.Name;
                 if (preferred != null)
                     return new FontFamily(preferred);
             }
@@ -469,8 +622,19 @@ namespace WFInfo
             return FontFamily.GenericSansSerif;
         }
 
-        private static void WarnIfNativeLibsMissing()
+        /// <summary>
+        /// Called only when Tesseract will run. macOS: links Homebrew's
+        /// libtesseract/libleptonica now (Vision runs never load them). Linux:
+        /// warns when the flake's native-library dir is not set.
+        /// </summary>
+        private static void PrepareTesseract()
         {
+            if (OperatingSystem.IsMacOS())
+            {
+                MacNative.EnableTesseract();
+                return;
+            }
+
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WFINFO_NATIVE_LIBS")))
                 Console.Error.WriteLine(
                     "WARNING: WFINFO_NATIVE_LIBS is not set; Tesseract native libraries may not load. " +
@@ -479,18 +643,23 @@ namespace WFInfo
 
         private static void PrintUsage()
         {
-            Console.WriteLine("WFInfo.Headless — native Linux runner for WFInfo's OCR/theme core");
+            Console.WriteLine("WFInfo.Headless — native Linux/macOS runner for WFInfo's OCR/theme core");
             Console.WriteLine();
             Console.WriteLine("Usage:");
             Console.WriteLine("  WFInfo.Headless --test <map.json> [results.json]   Run OCR regression suite");
             Console.WriteLine("  WFInfo.Headless <map.json> [results.json]           (flag optional)");
             Console.WriteLine("  WFInfo.Headless --theme-debug <folder> [uiScale]   Run theme detection over PNGs");
-            Console.WriteLine("  WFInfo.Headless --selfcheck                         Verify the OCR engine end-to-end");
+            Console.WriteLine("  WFInfo.Headless --selfcheck [--ocr <engine>]        Verify the OCR engine end-to-end");
             Console.WriteLine("  WFInfo.Headless --scan [options]                    Reward-screen scan (see --scan --help)");
+            Console.WriteLine("  WFInfo.Headless --scan --watch                      Scan automatically on every reward screen");
             Console.WriteLine();
             Console.WriteLine("Environment:");
             Console.WriteLine("  WFINFO_NATIVE_LIBS  dir with libtesseract50.so + libleptonica-1.82.0.so");
             Console.WriteLine("  WFINFO_DATA_DIR     application-data root override (tessdata + market DBs)");
+            Console.WriteLine("  WFINFO_OCR_ENGINE   default OCR engine: auto | vision | tesseract");
+            Console.WriteLine("  WFINFO_VISION_DEVICE  Vision compute device: auto | ane | gpu | cpu (macOS)");
+            Console.WriteLine("  WFINFO_MAC_HELPER   path of the wfinfo-mac helper (macOS; default next to the runner)");
+            Console.WriteLine("  WFINFO_EE_LOG       EE.log path for --scan --watch");
         }
     }
 }

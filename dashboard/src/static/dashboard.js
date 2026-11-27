@@ -1,16 +1,20 @@
 /**
  * Warframe Info dashboard — client behaviour (progressive enhancement).
- * - Logs page: re-fetch /api/logs every 3s and re-render the list, with a
+ * - Logs page: re-fetch /api/logs and re-render the list on each "change"
+ *   event for debug.log from /api/logs/events (server-sent events), with a
  *   client-side text filter that survives refreshes.
- * - Recently seen page: re-fetch /api/reward-events and /api/ocr-runs every
- *   10s and re-render the two card lists.
+ * - Recently seen page: re-fetch /api/reward-events on a debug.log change and
+ *   /api/ocr-runs on an ocr_runs change, and re-render the two card lists.
+ * - Fallback: without EventSource, or after 3 stream errors in a row, the
+ *   Logs page polls every 3s and the Recently seen page every 10s.
  * - Scan page: re-fetch /api/scan every 3s and swap in the re-rendered body,
  *   so a hotkey-triggered scan appears without a reload. The page's "Scan now"
  *   form posts to /scan/run with the chosen display or window; the script
  *   keeps the button busy until the scan answers and then refreshes the body.
  *   "Refresh lists" re-reads the host's displays and windows.
  *
- * Polling pauses while the tab is hidden. All dynamic text is escaped.
+ * Polling pauses while the tab is hidden; an event stream stays open. All
+ * dynamic text is escaped.
  */
 (function () {
   "use strict";
@@ -78,6 +82,65 @@
     );
   }
 
+  /**
+   * Run `fn` (returns a promise) one at a time: a call while one runs becomes
+   * a single follow-up run, so responses never arrive out of order.
+   */
+  function serial(fn) {
+    var busy = false;
+    var again = false;
+    return function run() {
+      if (busy) {
+        again = true;
+        return;
+      }
+      busy = true;
+      Promise.resolve().then(fn).catch(function () {}).then(function () {
+        busy = false;
+        if (again) {
+          again = false;
+          run();
+        }
+      });
+    };
+  }
+
+  /**
+   * Listen to /api/logs/events for `sources`. `onChange(source)` runs on each
+   * change and with null when the stream (re)opens. `fallback()` runs once
+   * when live events are not available; the caller then polls.
+   */
+  function watchLogEvents(sources, onChange, fallback) {
+    if (!window.EventSource) {
+      fallback();
+      return;
+    }
+    var query = sources.map(function (s) {
+      return "source=" + encodeURIComponent(s);
+    }).join("&");
+    var stream = new EventSource("/api/logs/events?" + query);
+    var failures = 0;
+    stream.addEventListener("ready", function () {
+      failures = 0;
+      onChange(null);
+    });
+    stream.addEventListener("change", function (event) {
+      failures = 0;
+      try {
+        onChange(JSON.parse(event.data).source);
+      } catch (_err) {
+        onChange(null);
+      }
+    });
+    stream.onerror = function () {
+      failures += 1;
+      if (stream.readyState === EventSource.CLOSED || failures >= 3) {
+        stream.close();
+        fallback();
+      }
+    };
+  }
+
   /* ------------------------------------------------------------------ */
   /* Logs                                                                */
   /* ------------------------------------------------------------------ */
@@ -87,6 +150,7 @@
   var logFilterInput = null;
   var logTimer = null;
   var logFilterValue = "";
+  var logLive = false;
 
   function applyLogFilter() {
     if (!logList) return;
@@ -119,14 +183,21 @@
     logTimer = setTimeout(pollLogs, delayMs);
   }
 
-  function pollLogs() {
-    fetchJson("/api/logs").then(function (data) {
+  function fetchLogs() {
+    return fetchJson("/api/logs").then(function (data) {
       renderLogLines(data.lines, data.updatedAt, data.total);
-      scheduleLogPoll(3000);
-    }).catch(function () {
+    }).catch(function (err) {
       if (logMeta) {
         logMeta.textContent += " · update failed, retrying…";
       }
+      throw err;
+    });
+  }
+
+  function pollLogs() {
+    fetchLogs().then(function () {
+      scheduleLogPoll(3000);
+    }, function () {
       scheduleLogPoll(5000);
     });
   }
@@ -143,13 +214,18 @@
       });
     }
     document.addEventListener("visibilitychange", function () {
+      if (logLive) return;
       if (logTimer) {
         clearTimeout(logTimer);
         logTimer = null;
       }
       if (!document.hidden) scheduleLogPoll(500);
     });
-    scheduleLogPoll(3000);
+    logLive = true;
+    watchLogEvents(["debug.log"], serial(fetchLogs), function () {
+      logLive = false;
+      scheduleLogPoll(3000);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -157,6 +233,7 @@
   /* ------------------------------------------------------------------ */
 
   var recentTimer = null;
+  var recentLive = false;
 
   function rewardCard(r, index) {
     var items = "";
@@ -219,40 +296,43 @@
     recentTimer = setTimeout(pollRecent, delayMs);
   }
 
-  function pollRecent() {
+  function fetchRewards() {
     var rewardsEl = $("wf-rewards");
-    var runsEl = $("wf-runs");
-    if (!rewardsEl && !runsEl) return;
+    if (!rewardsEl) return Promise.resolve();
     var rewardCount = $("wf-reward-count");
-    var runCount = $("wf-run-count");
     var rewardsEmpty = $("wf-rewards-empty");
+    return fetchJson("/api/reward-events").then(function (data) {
+      var html = "";
+      for (var i = 0; i < data.rewards.length; i++) {
+        html += rewardCard(data.rewards[i], i);
+      }
+      rewardsEl.innerHTML = html;
+      if (rewardCount) {
+        rewardCount.textContent = "(" + data.rewards.length + ")";
+      }
+      if (rewardsEmpty) rewardsEmpty.hidden = data.rewards.length > 0;
+    }).catch(function () {});
+  }
+
+  function fetchRuns() {
+    var runsEl = $("wf-runs");
+    if (!runsEl) return Promise.resolve();
+    var runCount = $("wf-run-count");
     var runsEmpty = $("wf-runs-empty");
-    Promise.all([
-      rewardsEl
-        ? fetchJson("/api/reward-events").then(function (data) {
-          var html = "";
-          for (var i = 0; i < data.rewards.length; i++) {
-            html += rewardCard(data.rewards[i], i);
-          }
-          rewardsEl.innerHTML = html;
-          if (rewardCount) {
-            rewardCount.textContent = "(" + data.rewards.length + ")";
-          }
-          if (rewardsEmpty) rewardsEmpty.hidden = data.rewards.length > 0;
-        }).catch(function () {})
-        : Promise.resolve(),
-      runsEl
-        ? fetchJson("/api/ocr-runs").then(function (data) {
-          var html = "";
-          for (var i = 0; i < data.runs.length; i++) {
-            html += runCard(data.runs[i]);
-          }
-          runsEl.innerHTML = html;
-          if (runCount) runCount.textContent = "(" + data.runs.length + ")";
-          if (runsEmpty) runsEmpty.hidden = data.runs.length > 0;
-        }).catch(function () {})
-        : Promise.resolve(),
-    ]).then(function () {
+    return fetchJson("/api/ocr-runs").then(function (data) {
+      var html = "";
+      for (var i = 0; i < data.runs.length; i++) {
+        html += runCard(data.runs[i]);
+      }
+      runsEl.innerHTML = html;
+      if (runCount) runCount.textContent = "(" + data.runs.length + ")";
+      if (runsEmpty) runsEmpty.hidden = data.runs.length > 0;
+    }).catch(function () {});
+  }
+
+  function pollRecent() {
+    if (!$("wf-rewards") && !$("wf-runs")) return;
+    Promise.all([fetchRewards(), fetchRuns()]).then(function () {
       scheduleRecentPoll(10000);
     });
   }
@@ -260,13 +340,23 @@
   function initRecent() {
     if (!$("wf-rewards") && !$("wf-runs")) return;
     document.addEventListener("visibilitychange", function () {
+      if (recentLive) return;
       if (recentTimer) {
         clearTimeout(recentTimer);
         recentTimer = null;
       }
       if (!document.hidden) scheduleRecentPoll(1000);
     });
-    scheduleRecentPoll(10000);
+    var refreshRewards = serial(fetchRewards);
+    var refreshRuns = serial(fetchRuns);
+    recentLive = true;
+    watchLogEvents(["debug.log", "ocr_runs"], function (source) {
+      if (source !== "ocr_runs") refreshRewards();
+      if (source !== "debug.log") refreshRuns();
+    }, function () {
+      recentLive = false;
+      scheduleRecentPoll(10000);
+    });
   }
 
   /* ------------------------------------------------------------------ */

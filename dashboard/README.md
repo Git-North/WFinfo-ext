@@ -109,11 +109,12 @@ scan record and screenshot; the runner writes them.
 |---|---|
 | `WFINFO_SCAN_CMD` | Shell command that runs one scan, instead of the default. |
 | `WFINFO_SCAN_ROOT` | Checkout the default command builds the runner from. |
-| `WFINFO_SCAN_REMOTE` | Set to `1` to accept scan requests from another host. Default: loopback only. |
+| `WFINFO_SCAN_REMOTE` | Set to `1` to accept scan requests from another host, and to show it the display and window lists. Default: loopback only. |
 
 The dashboard has no login. A scan is accepted only from the page itself (no
-cross-site post) and, by default, only from the host that serves the page. Do
-not expose the dashboard to an untrusted network with `WFINFO_SCAN_REMOTE=1`.
+cross-site post) and, by default, only from the host that serves the page.
+The display and window lists show window titles, so by default only that host
+gets them too; another host sees empty lists and a note. Do not expose the dashboard to an untrusted network with `WFINFO_SCAN_REMOTE=1`.
 
 ## In-game overlay
 

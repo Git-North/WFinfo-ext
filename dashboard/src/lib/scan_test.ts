@@ -76,6 +76,23 @@ Deno.test("parseScanResult reads a complete record", () => {
   assertEquals(s.best, { index: 2, part: "Mirage Prime Systems", plat: 62 });
 });
 
+Deno.test("parseScanResult reads OcrEngine, and null when a record lacks it", () => {
+  assertEquals(
+    parseScanResult({ ...complete, OcrEngine: "vision-layout" })!.ocrEngine,
+    "vision-layout",
+  );
+  assertEquals(
+    parseScanResult({ ...complete, OcrEngine: "tesseract" })!.ocrEngine,
+    "tesseract",
+  );
+  assertEquals(
+    parseScanResult(complete)!.ocrEngine,
+    null,
+    "an older record has no OcrEngine and still parses",
+  );
+  assertEquals(parseScanResult({ ...complete, OcrEngine: 3 })!.ocrEngine, null);
+});
+
 Deno.test("parseScanResult accepts a record with no choices", () => {
   // A scan that finds no reward screen still writes a record (contract).
   const scan = parseScanResult({

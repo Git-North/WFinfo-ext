@@ -15,14 +15,19 @@
  *   PORT                 listen port (default 8000; a busy port is a startup
  *                        error, never a fallback port)
  *   WFINFO_DATA_DIR      mirrors the headless runner: acts as the config root,
- *                        app dir becomes <dir>/WFInfo (default ~/.config/WFInfo)
+ *                        app dir becomes <dir>/WFInfo (default ~/.config/WFInfo;
+ *                        ignored on macOS: ~/Library/Application Support/WFInfo)
  *   WFINFO_GOVUK_DIR     unpacked govuk-frontend dist/govuk (offline override)
  *   WFINFO_CACHE_DIR     replace the XDG cache root for govuk assets
  *   WFINFO_SCAN_CMD      shell command that runs one reward-screen scan
  *                        (default: the flake's scan app, nix run
- *                        <checkout>#scan -- --no-notify)
+ *                        <checkout>#scan -- --no-notify; on macOS dotnet runs
+ *                        the headless runner, prebuilt DLL else dotnet run)
  *   WFINFO_SCAN_ROOT     checkout the default command builds the runner from
  *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests from another host
+ *                        and to show it the display and window lists
+ *   WFINFO_MAC_HELPER    macOS: wfinfo-mac path for the display/window lists
+ *                        (default <checkout>/headless/bin/Debug/net9.0/wfinfo-mac)
  *
  * No runtime dependencies beyond the Deno standard library.
  */
@@ -43,6 +48,7 @@ import {
   slugForName,
 } from "./lib/items.ts";
 import { extractRewardEvents, type RewardLogEvent } from "./lib/recent.ts";
+import { logEventsResponse } from "./lib/logwatch.ts";
 import { govukAsset, warmGovuk } from "./lib/govuk.ts";
 import { fetchItemStats, type LiveStats } from "./lib/wfm.ts";
 import {
@@ -72,12 +78,15 @@ import {
   type OverlayState,
 } from "./lib/overlay.ts";
 import { Scanner } from "./lib/scanner.ts";
+import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
 import {
   denoRunner,
   discoverTargets,
+  remoteClient,
   resolveCapture,
   type ScanTargets,
   toOptions,
+  withheldTargets,
 } from "./lib/targets.ts";
 
 const PORT = Number(Deno.env.get("PORT") ?? "8000");
@@ -114,16 +123,20 @@ function isCheckout(root: string): boolean {
  * works from any directory and from the packaged `.#dashboard` app, whose own
  * copy lives in the read-only store. Without a checkout the app reports its
  * own "no headless/WFInfo.Headless.csproj" error; set WFINFO_SCAN_CMD to run
- * the scan another way.
+ * the scan another way. On macOS the default is `dotnet` (src/lib/platform.ts).
  */
 const scanRoot = [Deno.cwd(), REPO_ROOT].find(isCheckout);
 const flakeRoot = scanRoot ?? REPO_ROOT;
 const scanCommand = (Deno.env.get("WFINFO_SCAN_CMD") ?? "").trim() ||
-  `${scanRoot ? `WFINFO_SCAN_ROOT='${quote(scanRoot)}' ` : ""}` +
-    `nix run '${quote(flakeRoot)}'#scan -- --no-notify`;
+  defaultScanCommand({ os: Deno.build.os, scanRoot, flakeRoot, isFile });
+const MAC_HELPER = macHelperPath(Deno.env.toObject(), flakeRoot);
 
-function quote(path: string): string {
-  return path.replaceAll("'", "'\\''");
+function isFile(path: string): boolean {
+  try {
+    return Deno.statSync(path).isFile;
+  } catch {
+    return false;
+  }
 }
 
 const scanner = new Scanner({ command: scanCommand });
@@ -152,7 +165,9 @@ async function captureTargets(force = false): Promise<ScanTargets> {
   if (!force && targetCache !== null && now - targetCache.at < TARGETS_TTL_MS) {
     return targetCache.targets;
   }
-  const targets = await discoverTargets(denoRunner());
+  const targets = await discoverTargets(denoRunner(), {
+    macHelper: MAC_HELPER,
+  });
   targetCache = { at: now, targets };
   return targets;
 }
@@ -666,9 +681,26 @@ function apiScanEvents(req: Request): Response {
 }
 
 /** The scan page's display/window lists; `?refresh=1` skips the short memo. */
-async function apiScanTargets(url: URL): Promise<Response> {
-  const targets = await captureTargets(url.searchParams.get("refresh") === "1");
-  return json(toOptions(targets));
+async function apiScanTargets(
+  url: URL,
+  info?: Deno.ServeHandlerInfo,
+): Promise<Response> {
+  const refresh = url.searchParams.get("refresh") === "1";
+  return json(toOptions(await clientTargets(info, refresh)));
+}
+
+/**
+ * The lists carry the host's window titles: like a scan run, only this host
+ * gets them, unless WFINFO_SCAN_REMOTE is set. Another host gets a note.
+ */
+async function clientTargets(
+  info?: Deno.ServeHandlerInfo,
+  force = false,
+): Promise<ScanTargets> {
+  const remote = remoteClient(info?.remoteAddr, SCAN_REMOTE);
+  return remote === null
+    ? await captureTargets(force)
+    : withheldTargets(remote);
 }
 
 /* ------------------------------------------------------------------ */
@@ -705,15 +737,11 @@ async function scanRun(
     }
   }
 
-  const remote = info?.remoteAddr;
-  if (
-    !SCAN_REMOTE && remote !== undefined && remote.transport === "tcp" &&
-    !(remote.hostname === "::1" || remote.hostname.startsWith("127.") ||
-      remote.hostname.startsWith("::ffff:127."))
-  ) {
+  const remote = remoteClient(info?.remoteAddr, SCAN_REMOTE);
+  if (remote !== null) {
     return json({
       error:
-        `A scan captures the screen of the machine that hosts the dashboard, and ${remote.hostname} is another host. Set WFINFO_SCAN_REMOTE=1 to accept scan requests from other hosts.`,
+        `A scan captures the screen of the machine that hosts the dashboard, and ${remote} is another host. Set WFINFO_SCAN_REMOTE=1 to accept scan requests from other hosts.`,
     }, 403);
   }
 
@@ -866,7 +894,9 @@ async function handler(
     if (path === "/recent") return html(recentPageHtml(recentState()));
 
     if (path === "/scan") {
-      return html(scanPageHtml(scanState(), toOptions(await captureTargets())));
+      return html(
+        scanPageHtml(scanState(), toOptions(await clientTargets(info))),
+      );
     }
 
     if (path === "/overlay") {
@@ -905,11 +935,17 @@ async function handler(
     }
 
     if (path === "/api/logs") return apiLogs();
+    if (path === "/api/logs/events") {
+      return logEventsResponse(req, {
+        "debug.log": { path: DEBUG_LOG, kind: "file" },
+        ocr_runs: { path: RUNS_DIR, kind: "dir" },
+      });
+    }
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();
     if (path === "/api/scan") return apiScan(url);
     if (path === "/api/scan/events") return apiScanEvents(req);
-    if (path === "/api/scan/targets") return await apiScanTargets(url);
+    if (path === "/api/scan/targets") return await apiScanTargets(url, info);
 
     if (path.startsWith("/govuk/")) {
       const asset = await govukAsset(path);
@@ -941,6 +977,23 @@ if (import.meta.main) {
   console.log(`Warframe Info dashboard`);
   console.log(`  data dir:  ${APP_DIR}`);
   await warmGovuk();
+  // On POSIX a scan runs in its own session and process group (scanner.ts),
+  // out of reach of the terminal's interrupt, quit and hang-up signals: kill
+  // it before the server goes. `Deno.exit` fires `unload`. On Windows the
+  // scan stays in the console's group, so the console's Ctrl-C still reaches
+  // it.
+  globalThis.addEventListener("unload", () => scanner.stop());
+  if (Deno.build.os !== "windows") {
+    const exitCodes = {
+      SIGHUP: 129,
+      SIGINT: 130,
+      SIGQUIT: 131,
+      SIGTERM: 143,
+    } as const;
+    for (const signal of ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"] as const) {
+      Deno.addSignalListener(signal, () => Deno.exit(exitCodes[signal]));
+    }
+  }
   try {
     // A bind failure (the port belongs to another process) is thrown here, so
     // this is where the operator gets told which port is taken. Deno prints

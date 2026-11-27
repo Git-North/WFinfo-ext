@@ -1,4 +1,5 @@
 import { assertEquals, assertStringIncludes } from "./testutil.ts";
+import { resolveAppDir } from "./fsdata.ts";
 
 /**
  * Route proof for POST /scan/run — the "Scan now" button. src/main.ts builds
@@ -9,12 +10,32 @@ import { assertEquals, assertStringIncludes } from "./testutil.ts";
  *
  * This test lives in its own file because Deno gives each test file its own
  * worker: an already-imported main.ts cannot pick up a different command.
+ *
+ * On macOS the app dir lives under HOME (WFINFO_DATA_DIR does not apply), the
+ * targets come from the wfinfo-mac helper (stubbed through WFINFO_MAC_HELPER),
+ * and the runner takes ids: `--output <display id>`, `--window <window id>`.
  */
+const mac = Deno.build.os === "darwin";
+const expected = mac
+  ? {
+    shownDisplay: "display:2",
+    chosenDisplay: "1",
+    windowArgs: ["--window", "7"],
+  }
+  : {
+    shownDisplay: "display:DP-2",
+    chosenDisplay: "DP-1",
+    windowArgs: ["--region", "1930,44 1900x1026"],
+  };
+
 Deno.test("POST /scan/run runs the scan command and reports the outcome", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_scan_run_" });
   const savedPath = Deno.env.get("PATH") ?? "";
+  const savedHome = Deno.env.get("HOME");
+  const savedAppData = Deno.env.get("APPDATA");
+  const windows = Deno.build.os === "windows";
   try {
-    const appDir = `${root}/WFInfo`;
+    const appDir = resolveAppDir({ WFINFO_DATA_DIR: root, HOME: root });
     await Deno.mkdir(`${appDir}/scans`, { recursive: true });
     await Deno.writeTextFile(
       `${root}/record.json`,
@@ -45,9 +66,19 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
     // main.ts is imported, because the page render caches the target list.
     const tools = `${root}/tools`;
     await Deno.mkdir(tools, { recursive: true });
+    // Windows runs no shebang scripts. There the script is `<name>.sh` and
+    // `<name>.cmd` (found through PATHEXT) hands it to `sh`, which the
+    // scanner needs anyway; no bare `<name>` exists for the lookup to pick.
     const stub = async (name: string, script: string) => {
-      await Deno.writeTextFile(`${tools}/${name}`, `#!/bin/sh\n${script}\n`);
-      await Deno.chmod(`${tools}/${name}`, 0o755);
+      const file = `${tools}/${name}${windows ? ".sh" : ""}`;
+      await Deno.writeTextFile(file, `#!/bin/sh\n${script}\n`);
+      await Deno.chmod(file, 0o755);
+      if (windows) {
+        await Deno.writeTextFile(
+          `${tools}/${name}.cmd`,
+          `@sh "%~dpn0.sh" %*\r\n`,
+        );
+      }
     };
     await stub(
       "wlr-randr",
@@ -62,7 +93,21 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
         `"monitor":"DP-2","x":1930,"y":44,"width":1900,"height":1026,` +
         `"is_focused":true,"is_visible":true}]}'`,
     );
-    Deno.env.set("PATH", `${tools}:${savedPath}`);
+    await stub(
+      "wfinfo-mac",
+      [
+        `if [ "$1" = displays ]; then`,
+        `echo '[{"id":2,"name":"DELL U2720Q","main":false,"x":1728,"y":0,` +
+        `"width":2560,"height":1440},{"id":1,"name":"Built-in Retina Display",` +
+        `"main":true,"x":0,"y":0,"width":1728,"height":1117}]'`,
+        "else",
+        `echo '[{"id":7,"owner":"steam_app_230410","title":"Warframe",` +
+        `"x":1930,"y":44,"width":1900,"height":1026,"frontmost":true}]'`,
+        "fi",
+      ].join("\n"),
+    );
+    Deno.env.set("PATH", `${tools}${windows ? ";" : ":"}${savedPath}`);
+    Deno.env.set("WFINFO_MAC_HELPER", `${tools}/wfinfo-mac`);
 
     // The marker files steer the stand-in command, so one worker can exercise
     // success, failure and a run that is still in flight. It is a real script
@@ -103,7 +148,17 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
     };
 
     Deno.env.set("WFINFO_DATA_DIR", root);
-    Deno.env.set("WFINFO_SCAN_CMD", `'${stubScript}'`);
+    Deno.env.set("HOME", root);
+    // On Windows the app dir is %APPDATA%\WFInfo, as for the .NET app (which
+    // ignores WFINFO_DATA_DIR there), so APPDATA points at the fixture too.
+    if (windows) Deno.env.set("APPDATA", root);
+    // On Windows the command goes through the Windows command line to the
+    // MSYS `sh`, which drops the backslashes of `C:\Users\...` even inside
+    // single quotes. Forward slashes (`C:/Users/...`) work in both.
+    const stubCommandPath = windows
+      ? stubScript.replaceAll("\\", "/")
+      : stubScript;
+    Deno.env.set("WFINFO_SCAN_CMD", `'${stubCommandPath}'`);
     const { handler } = await import("../main.ts");
 
     // The /scan page carries the button, wired to the route.
@@ -127,7 +182,8 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       );
 
     const resp = await click();
-    assertEquals(resp.status, 200);
+    // On failure, show the scan's own output, not only the status code.
+    assertEquals(resp.status, 200, await resp.clone().text());
     const data = await resp.json();
     assertEquals(data.ok, true);
     assertEquals(data.exitCode, 0);
@@ -221,7 +277,7 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       const pageHtml = await page.text();
       assertStringIncludes(pageHtml, 'name="display"');
       assertStringIncludes(pageHtml, 'name="window"');
-      assertStringIncludes(pageHtml, 'value="display:DP-2"');
+      assertStringIncludes(pageHtml, `value="${expected.shownDisplay}"`);
       assertStringIncludes(pageHtml, 'value="window:7"');
       assertStringIncludes(pageHtml, "steam_app_230410");
 
@@ -233,6 +289,39 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       assertEquals(targets.displays.length, 2);
       assertEquals(targets.windows.length, 1);
       assertEquals(targets.windows[0].label.includes("Warframe"), true);
+
+      // The lists carry window titles: another host gets none of them, in
+      // the API and in the page, only a note that says why.
+      const remoteTargets = await handler(
+        new Request("http://localhost/api/scan/targets?refresh=1"),
+        otherHost,
+      );
+      assertEquals(remoteTargets.status, 200);
+      const withheld = await remoteTargets.json();
+      assertEquals(withheld.displays, []);
+      assertEquals(withheld.windows, []);
+      assertStringIncludes(withheld.notes[0], "192.168.1.50 is another host");
+      const remotePage = await (await handler(
+        new Request("http://localhost/scan"),
+        otherHost,
+      )).text();
+      assertEquals(remotePage.includes("Warframe ("), false);
+      assertEquals(remotePage.includes("steam_app_230410"), false);
+      assertEquals(remotePage.includes('value="window:7"'), false);
+      assertStringIncludes(remotePage, "WFINFO_SCAN_REMOTE=1");
+
+      // The loopback client gets the titles.
+      const localTargets = await (await handler(
+        new Request("http://localhost/api/scan/targets"),
+        loopback,
+      )).json();
+      assertEquals(localTargets.windows.length, 1);
+      assertStringIncludes(localTargets.windows[0].label, "Warframe");
+      const localPage = await (await handler(
+        new Request("http://localhost/scan"),
+        loopback,
+      )).text();
+      assertStringIncludes(localPage, 'value="window:7"');
 
       // A chosen window is resolved to its current frame and passed on.
       const byWindow = await handler(
@@ -254,8 +343,8 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       assertStringIncludes(windowJson.message, "Warframe");
       assertEquals(
         await scanArgs(),
-        ["--region", "1930,44 1900x1026"],
-        "the window's current frame is the capture region",
+        expected.windowArgs,
+        "the window's current frame (macOS: its id) is the capture target",
       );
 
       // A chosen display becomes the grim output.
@@ -269,12 +358,12 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
             accept: "application/json",
             "content-type": "application/x-www-form-urlencoded",
           },
-          body: "display=display%3ADP-1&window=",
+          body: `display=display%3A${expected.chosenDisplay}&window=`,
         }),
         loopback,
       );
       assertEquals(byDisplay.status, 200);
-      assertEquals(await scanArgs(), ["--output", "DP-1"]);
+      assertEquals(await scanArgs(), ["--output", expected.chosenDisplay]);
 
       // A window that has closed is refused before the scan starts.
       await clearScanArgs();
@@ -302,6 +391,11 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
   } finally {
     Deno.env.set("PATH", savedPath);
     Deno.env.delete("WFINFO_SCAN_CMD");
+    Deno.env.delete("WFINFO_MAC_HELPER");
+    if (savedHome === undefined) Deno.env.delete("HOME");
+    else Deno.env.set("HOME", savedHome);
+    if (savedAppData === undefined) Deno.env.delete("APPDATA");
+    else Deno.env.set("APPDATA", savedAppData);
     await Deno.remove(root, { recursive: true });
   }
 });

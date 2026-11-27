@@ -18,22 +18,33 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   fmt/lint exclusions (AGENTS.md, README.md, `src/static`).
 - `src/main.ts` — HTTP server: routing (including `/scan`, `POST /scan/run`,
   `/api/scan` (`?view=overlay` for the overlay body), `/api/scan/targets`,
-  `/scan/screenshot`, `/overlay` and the `/api/scan/events` event stream), env
-  config (`PORT`,
+  `/scan/screenshot`, `/overlay`, the `/api/scan/events` event stream and
+  `/api/logs/events`), env config (`PORT`,
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
-  `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`), file reading, API endpoints.
+  `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`, `WFINFO_MAC_HELPER`), file
+  reading, API endpoints.
 - `src/lib/scanner.ts` — one scan run at a time: spawn the configured command
-  with the per-run capture arguments, kill it at the deadline, report
-  status/exit code/output.
+  with the per-run capture arguments in its own process group, kill the group
+  at the deadline or on server shutdown, report status/exit code/output.
 - `src/lib/targets.ts` — what a scan can capture on this host: `wlr-randr`
   displays, `mmsg get all-clients` window frames (mango IPC), `wlrctl toplevel
   list` names as a fallback, and the choice → `--output`/`--region` mapping.
+  On macOS: `wfinfo-mac displays`/`windows` (the headless Swift helper), and the
+  choice → `--output <display id>`/`--window <window id>` mapping. Also the
+  loopback check (`remoteClient`) that guards the lists and the scan run.
+- `src/lib/platform.ts` — per-OS defaults: the scan command (`nix run` on
+  Linux; `dotnet` with the prebuilt runner DLL, else `dotnet run`, on macOS)
+  and the `wfinfo-mac` path.
 - `src/lib/fsdata.ts` — app-data dir resolution (mirrors headless
   `ConfigureEnvironment`), `debug.log` tail/parse helpers, OCR suite-result
   parsing.
 - `src/lib/scan.ts` — scan-record parsing: `parseScanResult` for the
-  `scans/latest.json` contract, plus best-choice resolution with the contract
+  `scans/latest.json` contract (`OcrEngine` is optional: old records have
+  none), plus best-choice resolution with the contract
   tie rules (highest plat, then higher ducats, then the later index).
+- `src/lib/logwatch.ts` — log change events: shared, reference-counted
+  `Deno.watchFs` per directory with a polling fallback (`WatchHub`), and the
+  `/api/logs/events` server-sent events response.
 - `src/lib/recent.ts` — reward-screen event extraction from log lines
   ("…, detected choice: N").
 - `src/lib/items.ts` — market DB parsing: `market_items.json` slug catalog,
@@ -49,10 +60,11 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
 - `src/lib/filewatch.ts` — `FileWatch`: tells subscribers when one file's text
   changes (`Deno.watchFs` on its directory, polling fallback). Feeds
   `/api/scan/events`.
-- `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (polling,
-  filter and the scan-button submit, progressive enhancement),
-  `overlay.css` + `overlay.js` (the overlay page: styles, event stream with
-  polling fallback, Scan button), `warframe-info-logo.webp` (brand asset).
+- `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (log
+  events with a polling fallback, `/scan` polling, filter and the scan-button
+  submit, progressive enhancement), `overlay.css` + `overlay.js` (the overlay
+  page: styles, event stream with polling fallback, Scan button),
+  `warframe-info-logo.webp` (brand asset).
 - `src/lib/*_test.ts` + `src/lib/testutil.ts` — offline unit tests.
 
 ## Local Contracts
@@ -63,6 +75,9 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   keeps the `nix flake check` gates offline.
 - Data-dir resolution must mirror the .NET side: `WFINFO_DATA_DIR` acts as the
   config root (app dir = `<dir>/WFInfo`), else XDG/`%APPDATA%` rules apply.
+  On macOS the app dir is always `~/Library/Application Support/WFInfo`
+  (.NET ignores the override there), so tests that need a fake app dir set
+  `HOME` too.
 - Pages use GOV.UK Frontend classes only; bespoke styles are prefixed `wf-`.
 - All user/file-derived text is HTML-escaped before interpolation
   (`src/lib/html.ts`).
@@ -72,22 +87,37 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   crown crest.
 - A scan run is the headless runner, never a dashboard re-implementation:
   `/scan/run` spawns `WFINFO_SCAN_CMD` (default: the flake's scan app at the
-  checkout that holds `headless/`, `--no-notify`). The runner owns every file a
+  checkout that holds `headless/`, `--no-notify`; on macOS `dotnet` runs that
+  checkout's runner, see `src/lib/platform.ts`). The runner owns every file a
   scan writes (`scans/`, `price_cache.json`); the dashboard itself still writes
   nothing to the data dir.
 - One scan at a time: a second request while a run is in flight is answered
   `409`, never queued — two runs would capture the screen twice and race on the
   scan record. A run past its deadline (180 s) is killed and reported as
   `timeout`.
+- Kill the process group, never only `sh`: the command runs detached (own
+  session and group, POSIX), and the deadline sends SIGKILL to the negative
+  pid. Children that survive keep the output pipes open. dash (Debian/Ubuntu
+  `/bin/sh`) forks even a single command, and `nix run` always starts
+  `dotnet`. The group is out of reach of the terminal's signals, so `main.ts`
+  stops the run on SIGHUP, SIGINT, SIGQUIT, SIGTERM and `unload`. On Windows
+  the command is not detached and only the direct child is killed.
+- The run ends when `sh` exits. Output that arrives after that is read for
+  at most 1 s: a process that left the group (its own `setsid`) and kept the
+  pipes cannot hold the scanner. Processes that closed the pipes and outlive
+  `sh` (dotnet's MSBuild reuse node) are left to end by themselves.
 - The Scan page offers the host's displays and windows, and the choice is
   resolved on the server: the form carries an output name (`display:DP-2`) or a
   client id (`window:7`), and `src/lib/targets.ts` turns it into `--output` or
   `--region` from the geometry the compositor reports *now*. A token the
-  discovery does not know is refused (`400`), never substituted; an empty
-  choice runs the command with no capture argument (the runner then tries every
-  output). Target discovery is read-only, best-effort and memoised for 3 s:
-  a missing `wlr-randr`/`mmsg` shortens the list and adds a note, it never
-  fails the page.
+  discovery does not know is refused (`400`), never substituted. One exception
+  on Linux: when the display list is empty (no `wlr-randr`), a display name
+  still goes to grim. On macOS a display id must be in the list, also when the
+  list is empty. An empty choice runs the command with no capture argument
+  (the runner then tries every output). Target discovery is read-only, best-effort and memoised for 3 s:
+  a missing `wlr-randr`/`mmsg` (or, on macOS, a missing `wfinfo-mac`) shortens
+  the list and adds a note, it never fails the page. On macOS a window is
+  captured by its id (`--window`), so no geometry is passed.
 - The route is a POST and is loopback-only: a cross-site post is refused, and a
   request from another host needs `WFINFO_SCAN_REMOTE=1`. The dashboard has no
   authentication; a scan captures the screen of the host that runs it.
@@ -107,12 +137,39 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   loopback and same-origin guards apply unchanged. `/overlay?display=…&window=…`
   passes those capture tokens to the post as they are; the server validates
   them. The button stays hidden without the script.
+- The display and window lists (`/api/scan/targets` and the `/scan` page)
+  carry the host's window titles. They follow the same rule: only a loopback
+  client gets them, unless `WFINFO_SCAN_REMOTE=1`. Another host gets empty
+  lists and a note that says why. `remoteClient` in `src/lib/targets.ts` is
+  the one loopback check for the lists and for `POST /scan/run`. The server
+  listens on all interfaces (`Deno.serve` without `hostname`).
+- Log views are event-driven: `GET /api/logs/events` sends `event: change`
+  with `{"source": "debug.log" | "ocr_runs"}` on each change, `event: ready`
+  when the stream opens, and `: ping` every 25 s. `?source=` (repeatable)
+  picks the sources; an unknown one gets `400`. The page then re-fetches its
+  JSON endpoint (`/api/logs`, `/api/reward-events`, `/api/ocr-runs`); the
+  events carry no log text.
+- One `Deno.watchFs` per directory, shared and reference counted; it closes
+  when the last stream closes. When `Deno.watchFs` throws or the directory does
+  not exist yet, the server stats every 3 s and still sends events. A change is
+  a new stat stamp (size, mtime, inode), never a content read.
+- Fallback in the page: without `EventSource`, or after 3 stream errors in a
+  row, `dashboard.js` polls as before (`/logs` 3 s, `/recent` 10 s) and pauses
+  while the tab is hidden. An open stream stays open while hidden.
+- Watching is read-only: stat, list and watch only. The dashboard reads
+  WFInfo's own `debug.log`, never the game's `EE.log`.
+- `/scan` still polls `/api/scan` every 3 s. Follow-up: move it to the scan
+  file watcher (`filewatch.ts`, `/api/scan/events`) from the overlay branch.
 - Progressive enhancement: `dashboard.js` posts with `Accept: application/json`
   and renders the status and the command output. Without the script the form
   still works (302 back to `/scan`, or the error page).
 
 ## Work Guidance
 
+- macOS without Nix: build the runner once (`dotnet build
+  headless/WFInfo.Headless.csproj`, which also builds `wfinfo-mac`), then
+  `cd dashboard && deno task dev`. The app that starts the dashboard needs
+  Screen Recording permission for a scan to capture.
 - Run inside the flake dev shell (`nix develop` from the repo root), then:
   - `cd dashboard && deno task dev` — watch server on http://localhost:8000
   - `deno task start` / `deno task check` / `deno task test` / `deno task fmt`
@@ -145,6 +202,10 @@ compact, live view for a small in-game browser window (Steam overlay). It is an
   and check that a new `event: scan` arrives in under 1 s.
   `src/lib/overlay_route_test.ts` and `src/lib/filewatch_test.ts` cover this
   offline.
+- Log-events smoke: point `HOME` (macOS) or `WFINFO_DATA_DIR` at a temp dir,
+  run `curl -N http://127.0.0.1:<port>/api/logs/events`, append a line to the
+  temp `debug.log`, and check for `event: change`. Never write to the real
+  app dir.
 - Scan-button smoke: open `/scan`, press "Scan now", and check the status line
   and the refreshed record — `src/lib/scan_run_test.ts` covers the route with a
   stand-in command; a real press needs the flake's scan tools on the machine.
