@@ -211,27 +211,26 @@ namespace WFInfo.MacOS
         }
 
         /// <summary>
-        /// The market name for one slot: the closest valid candidate under
+        /// The market name for one slot: the first valid candidate (best first) under
         /// WFInfo's distance threshold, or null. Same checks as WFInfo's reward
         /// pipeline (OCR.ProcessRewardScreenForTest).
         /// </summary>
         private static string MatchSlot(RewardSlot slot)
         {
-            string best = null;
-            int bestDistance = int.MaxValue;
+            // Candidates come best first: the whole name (wrapped lines
+            // joined), then shorter prefixes. Take the first one that matches
+            // within WFInfo's threshold. Picking the lowest distance over all
+            // of them instead lets a short prefix ("AKSTILETTO PRIME") beat the
+            // whole name, because a short text is close to many items.
             foreach (string candidate in slot.Candidates)
             {
                 if (string.IsNullOrWhiteSpace(candidate) || !OCR.PartNameValid(candidate)) continue;
                 string name = Main.dataBase.GetPartName(candidate, out int distance, true, out _);
                 if (distance == 9999 || string.IsNullOrEmpty(name)) continue;
                 if (distance > MaxDistance(candidate.Length)) continue;
-                if (distance < bestDistance)
-                {
-                    best = name;
-                    bestDistance = distance;
-                }
+                return name;
             }
-            return best;
+            return null;
         }
     }
 }
