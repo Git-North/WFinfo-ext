@@ -61,7 +61,9 @@ code type-checks without WPF/WinForms/Win32.
   runs), `MacNative.cs` (libgdiplus and Tesseract links for the developer
   modes only). The csproj target `BuildMacHelper` compiles the helper
   with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
-  only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+  only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target
+  `PublishMacHelper` copies it into the `dotnet publish` folder, also on
+  macOS only.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
   and reads in memory and writes the capture only into `scans/` (`--save`).
   Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
@@ -95,6 +97,10 @@ code type-checks without WPF/WinForms/Win32.
   prefer removing the Windows-only dependency from the shared file instead.
 - `Scan/` and `macos/` are real feature code, not seams — seams stay in
   `Platform/`.
+- `wfinfo-mac rewards` returns every line in its generous crop (squad names
+  too), with full-image boxes; the caller drops lines outside the name rows.
+- On macOS the default `--selfcheck` proves the Vision stack only, not
+  WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
   `notify-send` (verdict); the flake's dev shell and the `.#scan` app put all
   three on PATH, so never assume they exist system-wide.
@@ -152,6 +158,8 @@ code type-checks without WPF/WinForms/Win32.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+    Trimmed; blank counts as unset. On macOS a missing file is an error
+    (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
 - Environment for OCR data dirs derives from the OS XDG config dir when
   `WFINFO_DATA_DIR` is unset — do not assume Windows `%APPDATA%`. On macOS the
   app dir is `~/Library/Application Support/WFInfo`.

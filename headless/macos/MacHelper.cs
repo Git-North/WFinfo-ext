@@ -19,13 +19,41 @@ namespace WFInfo.MacOS
     {
         public const string FileName = "wfinfo-mac";
 
+        public const string Variable = "WFINFO_MAC_HELPER";
+
+        /// <summary>
+        /// The trimmed <c>WFINFO_MAC_HELPER</c> value, or null when it is unset
+        /// or holds only white space.
+        /// </summary>
+        public static string Configured
+        {
+            get
+            {
+                string value = Environment.GetEnvironmentVariable(Variable)?.Trim();
+                return string.IsNullOrEmpty(value) ? null : value;
+            }
+        }
+
+        /// <summary>
+        /// On macOS, throws <see cref="ArgumentException"/> when
+        /// <c>WFINFO_MAC_HELPER</c> names a file that does not exist: a bad
+        /// override is a configuration error, not "no helper".
+        /// </summary>
+        public static void CheckConfigured()
+        {
+            if (!OperatingSystem.IsMacOS()) return;
+            string configured = Configured;
+            if (configured != null && !File.Exists(configured))
+                throw new ArgumentException($"{Variable} names a missing file: '{configured}'. Fix the path or unset {Variable}.");
+        }
+
         /// <summary>Full path of the helper, or null when it is not built.</summary>
         public static string Path
         {
             get
             {
-                string configured = Environment.GetEnvironmentVariable("WFINFO_MAC_HELPER");
-                if (!string.IsNullOrEmpty(configured))
+                string configured = Configured;
+                if (configured != null)
                     return File.Exists(configured) ? configured : null;
 
                 string local = System.IO.Path.Combine(AppContext.BaseDirectory, FileName);
@@ -58,9 +86,11 @@ namespace WFInfo.MacOS
         public static byte[] RunBytes(IEnumerable<string> arguments, int timeoutMs, byte[] input = null)
         {
             string helper = Path;
+            if (helper == null && Configured != null)
+                throw new InvalidOperationException($"{Variable} names a missing file: '{Configured}'");
             if (helper == null)
                 throw new InvalidOperationException(
-                    $"{FileName} is not built; build headless/WFInfo.Headless.csproj on macOS (it compiles headless/macos/{FileName}.swift) or set WFINFO_MAC_HELPER");
+                    $"{FileName} is not built; build headless/WFInfo.Headless.csproj on macOS (it compiles headless/macos/{FileName}.swift) or set {Variable}");
 
             var psi = new ProcessStartInfo(helper)
             {

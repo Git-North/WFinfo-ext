@@ -216,6 +216,9 @@ func recognize(_ image: CGImage, request: RecognizeTextRequest, origin: CGPoint 
     }
 }
 
+/// Images `ocr` reads at the same time.
+let ocrConcurrency = 4
+
 func runOcr(_ raw: ArraySlice<String>) async throws {
     let args = try Arguments(raw, valueFlags: ["--lang", "--device"])
     // Each source is a file path, "-" (one image on stdin) or an in-memory frame.
@@ -235,40 +238,53 @@ func runOcr(_ raw: ArraySlice<String>) async throws {
     let device = try computeDevice(named: deviceChoice)
 
     let started = Date()
-    // One task per image: the requests run concurrently, results keep input order.
-    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
-        for (index, source) in sources.enumerated() {
-            group.addTask {
-                let begin = Date()
-                var entry: [String: Any] = [:]
-                do {
-                    let image: CGImage
-                    switch source {
-                    case .path(let path):
-                        entry["file"] = path
-                        image = try loadImage(path)
-                    case .frame(let number, let data):
-                        entry["frame"] = number
-                        image = try decodeImage(data, label: "frame \(number)")
-                    }
-                    let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
-                    let lines = try await recognize(image, request: request)
-                    entry["width"] = image.width
-                    entry["height"] = image.height
-                    entry["lines"] = lines
-                    entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
-                    entry["error"] = NSNull()
-                } catch {
-                    entry["lines"] = []
-                    entry["text"] = ""
-                    entry["error"] = "\(error)"
-                }
-                entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
-                return (index, entry)
+    // Reads one image; errors go into its entry, so one bad image does not stop the rest.
+    let readOne: @Sendable (Int) async -> (Int, [String: Any]) = { index in
+        let begin = Date()
+        var entry: [String: Any] = [:]
+        do {
+            let image: CGImage
+            switch sources[index] {
+            case .path(let path):
+                entry["file"] = path
+                image = try loadImage(path)
+            case .frame(let number, let data):
+                entry["frame"] = number
+                image = try decodeImage(data, label: "frame \(number)")
             }
+            let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
+            let lines = try await recognize(image, request: request)
+            entry["width"] = image.width
+            entry["height"] = image.height
+            entry["lines"] = lines
+            entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            entry["error"] = NSNull()
+        } catch {
+            entry["lines"] = []
+            entry["text"] = ""
+            entry["error"] = "\(error)"
+        }
+        entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
+        return (index, entry)
+    }
+    // At most ocrConcurrency images are decoded and in Vision at one time, so a
+    // large batch cannot use all memory. Results keep input order.
+    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
+        var next = 0
+        while next < min(ocrConcurrency, sources.count) {
+            let index = next
+            group.addTask { await readOne(index) }
+            next += 1
         }
         var ordered = [[String: Any]](repeating: [:], count: sources.count)
-        for await (index, entry) in group { ordered[index] = entry }
+        for await (index, entry) in group {
+            ordered[index] = entry
+            if next < sources.count {
+                let index = next
+                group.addTask { await readOne(index) }
+                next += 1
+            }
+        }
         return ordered
     }
 
@@ -881,7 +897,7 @@ func runSynth(_ raw: ArraySlice<String>) throws {
         "height": height,
         "screenScaling": rounded(Double(s), 1_000_000),
         "uiScale": u,
-        "seed": Int(seed),
+        "seed": NSNumber(value: seed), // UInt64: Int(seed) traps above Int.max
         "nameRows": ["top": rounded(rowTop, 10), "bottom": rounded(rowTop + CGFloat(lineHeight) * k, 10)],
         "slots": slots,
     ])
@@ -920,6 +936,17 @@ func parseHotkey(_ text: String) throws -> (UInt32, UInt32) {
     return (UInt32(key), modifiers)
 }
 
+/// The URL for log lines: scheme, host, port and path only. User, password,
+/// query and fragment can hold credentials, so they never reach the log.
+func redactedURL(_ url: URL) -> String {
+    guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "<url>" }
+    parts.user = nil
+    parts.password = nil
+    parts.query = nil
+    parts.fragment = nil
+    return parts.string ?? "<url>"
+}
+
 final class HotkeyState {
     static var url = URL(string: "http://127.0.0.1:8000/scan/run")!
     static var quiet = false
@@ -945,7 +972,7 @@ func triggerScan() {
     }
     HotkeyState.busy = true
     play("Tink")
-    log("hotkey: POST \(HotkeyState.url.absoluteString)")
+    log("hotkey: POST \(redactedURL(HotkeyState.url))")
     var request = URLRequest(url: HotkeyState.url, timeoutInterval: 200)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -990,7 +1017,7 @@ func runHotkey(_ raw: ArraySlice<String>) throws -> Never {
     let status = RegisterEventHotKey(code, modifiers, id, GetApplicationEventTarget(), 0, &ref)
     guard status == noErr else { throw Failure("cannot register \(keyText) (\(status)); another app may own it") }
 
-    log("hotkey \(keyText) registered; press it to scan via \(HotkeyState.url.absoluteString). Ctrl-C stops.")
+    log("hotkey \(keyText) registered; press it to scan via \(redactedURL(HotkeyState.url)). Ctrl-C stops.")
     if HotkeyState.fireOnce { DispatchQueue.main.async { triggerScan() } }
     app.run()
     exit(0)
