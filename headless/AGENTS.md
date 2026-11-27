@@ -64,6 +64,12 @@ code type-checks without WPF/WinForms/Win32.
   only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target
   `PublishMacHelper` copies it into the `dotnet publish` folder, also on
   macOS only.
+  The helper MUST build with
+  the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
+  SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
+  Today that is only compute-device pinning
+  (`RecognizeTextRequest.supportedComputeStageDevices`/`setComputeDevice`);
+  everything else the helper uses is macOS 14/15 API.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
   and reads in memory and writes the capture only into `scans/` (`--save`).
   Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
@@ -141,6 +147,11 @@ code type-checks without WPF/WinForms/Win32.
   `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
   appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
   and SIP strips `DYLD_*` there).
+- `scans/last.png` and `scans/latest.json` are one pair: write both under
+  per-process temporary names in `scans/` (`last.png.<pid>.tmp`,
+  `latest.json.<pid>.tmp`), then rename the screenshot and the record last.
+  Never write either file in place. Stale `.tmp` files (owner process gone,
+  or older than 10 minutes) are deleted at the next scan start.
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
@@ -162,6 +173,7 @@ code type-checks without WPF/WinForms/Win32.
     `XDG_CONFIG_HOME` there.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
+    Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
     Trimmed; blank counts as unset. On macOS a missing file is an error
     (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
