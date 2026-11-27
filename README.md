@@ -137,6 +137,46 @@ dashboard. Choose the display that shows Warframe, or choose one window to
 capture its frame instead of the whole monitor. Press "Refresh lists" after
 Warframe starts, then press "Scan now".
 
+## Overlay pin (optional Steam plugin)
+
+WFInfo-ext can show its Scan page on top of the game while the reward screen is
+open. It pins the web browser of the Steam overlay when a scan finds reward
+names, and unpins it when the reward screen ends. A pinned window stays visible
+over the game.
+
+Steam has no interface for this, so the work is done by a separate Millennium
+plugin, Overlay Auto-Pin (Git-North/steam-overlay-pin; the repository is private
+for now: link when public). WFInfo-ext sends its requests directly to the
+plugin's local socket. No other program runs between them. It uses only that
+socket, and it does not touch the game.
+
+**The feature is off by default.** To turn it on:
+
+1. Install [Millennium](https://steambrew.app/), then install and enable the
+   Overlay Auto-Pin plugin.
+
+2. Install Rust, so that the build includes the client library: on macOS
+   `brew install rust`; on Linux the flake supplies it. Without Rust the runner
+   builds and scans as usual, and the pin is not available.
+
+3. In the game, open the Steam overlay (Shift+Tab), open its web browser, and
+   load the dashboard's Scan page (`http://127.0.0.1:8000/scan`). The plugin can
+   pin only a window that was opened at least once.
+
+4. Set `"overlayPin": true` in `<data dir>/WFInfo/wfinfo-ext-settings.json`
+   (on macOS `~/Library/Application Support/WFInfo/wfinfo-ext-settings.json`).
+
+If the overlay is closed when the pin changes, the plugin opens and closes it
+very quickly, so that Steam shows the change at once.
+
+A pin problem does not stop a scan. It has a `PLG-` code from
+`errors/catalog.json`, with a description and what to do. The plugin makes its
+socket in the usual place for each system. If yours is somewhere else, set
+`OVERLAY_AUTOPIN_SOCKET` for both Steam and WFInfo-ext.
+
+The client is `headless/native/overlay/` (Rust). Run its tests with
+`cargo test` in that folder. They use a fake plugin and never contact Steam.
+
 ## Checks
 
 ```bash
