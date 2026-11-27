@@ -881,7 +881,7 @@ func runSynth(_ raw: ArraySlice<String>) throws {
         "height": height,
         "screenScaling": rounded(Double(s), 1_000_000),
         "uiScale": u,
-        "seed": Int(seed),
+        "seed": NSNumber(value: seed), // UInt64: Int(seed) traps above Int.max
         "nameRows": ["top": rounded(rowTop, 10), "bottom": rounded(rowTop + CGFloat(lineHeight) * k, 10)],
         "slots": slots,
     ])
