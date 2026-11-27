@@ -1,0 +1,209 @@
+# CI: runs the repository verification gates (see AGENTS.md "Verification")
+# on GitHub-hosted runners. The repository is public, so these runners are free.
+#
+# Every third-party action is pinned to a full commit SHA. The comment after
+# each SHA names the release tag it resolves to. To update an action, resolve
+# the new tag to its commit (git ls-remote https://github.com/<owner>/<repo>
+# refs/tags/<tag>) and change the SHA and the comment together.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same branch or pull request cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  # Keep equal to the Deno in the flake's locked nixpkgs (flake.lock), so
+  # `deno fmt --check` gives the same result here and in `nix flake check`:
+  #   nix eval --raw --inputs-from . nixpkgs#deno.version
+  DENO_VERSION: "2.9.5"
+
+jobs:
+  linux:
+    name: Linux (Nix flake, headless runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@382a9ed9481c7c1f94f68b72ef105b3417c73877 # v32.1.0
+        with:
+          # Authenticated GitHub fetches for the nixpkgs input (rate limit).
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: nix flake check
+        run: nix flake check -L
+
+      - name: Build headless runner
+        run: nix develop -c dotnet build headless/WFInfo.Headless.csproj
+
+      # Needs network: the first run downloads tessdata (eng.traineddata) from
+      # raw.githubusercontent.com (WFCD/WFinfo `libs` branch). Hosted runners
+      # have network access. The data dir is a temp dir, so each run is clean.
+      - name: Self-check (native OCR end-to-end)
+        env:
+          WFINFO_DATA_DIR: ${{ runner.temp }}/wfinfo-data
+        run: nix develop -c dotnet run --project headless -- --selfcheck
+
+  dashboard:
+    name: Dashboard (Deno gates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: deno fmt --check
+        run: deno fmt --check
+      - name: deno check src
+        run: deno check src
+      - name: deno lint
+        run: deno lint
+      - name: deno test -A src (offline unit tests)
+        run: deno test -A src
+
+  macos:
+    name: macOS (Apple Silicon)
+    # macos-latest is an arm64 (Apple Silicon) runner.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The flake has no darwin outputs, so this job does not use Nix.
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Build headless runner
+        run: dotnet build headless/WFInfo.Headless.csproj
+
+      # macOS port hook. The macOS port (Swift Vision OCR helper) is written
+      # separately and adds a Swift package under headless/. This step builds
+      # every Package.swift it finds there. With no Package.swift, it skips.
+      # The port only has to add its package; this workflow needs no change.
+      # --force-resolved-versions builds only the versions locked in the
+      # package's Package.resolved (commit it with the package) and fails if
+      # the file is missing or out of date, instead of resolving new versions.
+      - name: Build Swift package(s) under headless/ (macOS port, if present)
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r manifest; do
+            dir=$(dirname "$manifest")
+            found=1
+            echo "::group::swift build --package-path $dir"
+            swift build --package-path "$dir" -c release --force-resolved-versions
+            echo "::endgroup::"
+          done < <(find headless -name Package.swift -not -path '*/.build/*' | sort)
+          if [ "$found" -eq 0 ]; then
+            echo "No Package.swift under headless/ - skipped."
+          fi
+
+      - name: Dashboard gates
+        working-directory: dashboard
+        run: |
+          deno fmt --check
+          deno check src
+          deno lint
+          deno test -A src
+
+  # Best effort: Linux and macOS are required, Windows is a bonus. A failure
+  # here does not fail the workflow (continue-on-error). Every build step runs
+  # even when an earlier one fails, and the last step names the ones that
+  # failed. Windows tooling stays in this job only: no Nix and no Swift here.
+  windows:
+    name: Windows (best effort)
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Check out with LF line endings, as on Linux and macOS, so that
+      # `deno fmt --check` sees the same files. .gitattributes sets
+      # `* text=auto`, which uses core.eol (native CRLF on Windows), so set
+      # both settings. *.bat keeps eol=crlf from .gitattributes.
+      - name: Keep LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      # The Windows desktop app: net48 + WPF/WinForms, SDK-style project.
+      - name: Build WFInfo app (WFInfo.sln, Release)
+        id: app
+        continue-on-error: true
+        run: dotnet build WFInfo.sln -c Release
+
+      - name: Build headless runner
+        id: headless
+        continue-on-error: true
+        run: dotnet build headless/WFInfo.Headless.csproj
+
+      - name: Dashboard gates
+        id: dashboard
+        continue-on-error: true
+        working-directory: dashboard
+        run: |
+          deno fmt --check
+          deno check src
+          deno lint
+          deno test -A src
+
+      - name: Result
+        env:
+          APP: ${{ steps.app.outcome }}
+          HEADLESS: ${{ steps.headless.outcome }}
+          DASHBOARD: ${{ steps.dashboard.outcome }}
+        run: |
+          {
+            echo "### Windows (best effort)"
+            echo "| Build | Result |"
+            echo "| --- | --- |"
+            echo "| WFInfo.sln (Release) | $APP |"
+            echo "| headless/WFInfo.Headless.csproj | $HEADLESS |"
+            echo "| dashboard gates | $DASHBOARD |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "WFInfo.sln=$APP headless=$HEADLESS dashboard=$DASHBOARD"
+          [ "$APP" = success ] && [ "$HEADLESS" = success ] && [ "$DASHBOARD" = success ]

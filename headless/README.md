@@ -77,6 +77,10 @@ dotnet run --project headless -- --scan --watch                # scan on every r
   Vision stage that lists it (`wfinfo-mac devices`). Vision accepts the pin;
   timings are nearly the same on every device, so they do not show which unit
   ran the model.
+  Pinning needs a helper built with Xcode 26 or later (the macOS 26 SDK). A
+  helper built with Xcode 16 (the macOS 15 SDK) builds and runs, uses Vision's
+  automatic device, and prints a note for `--device ane|gpu|cpu`;
+  `wfinfo-mac devices` then reports `"canPinComputeDevice": false`.
 - `--watch` finds `EE.log` in Steam's compatibility prefix
   (`~/Library/Application Support/Steam/steamapps/compatdata/230410/pfx/...`)
   or in a CrossOver bottle. The newest log wins. On macOS the watch reacts
