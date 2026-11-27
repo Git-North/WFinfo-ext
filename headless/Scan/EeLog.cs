@@ -36,15 +36,33 @@ namespace WFInfo.Scan
         };
 
         /// <summary>True when the line announces a reward screen.</summary>
-        public static bool IsRewardTrigger(string line)
+        public static bool IsRewardTrigger(string line) => MatchTrigger(line) != null;
+
+        /// <summary>
+        /// The trigger phrase the line contains ("Got rewards" or "Pause
+        /// countdown done"), or null. Callers report this phrase, never the
+        /// line: EE.log also holds PC specs, the public IP and the account
+        /// e-mail, so no EE.log text other than a trigger phrase may be printed,
+        /// logged or stored.
+        /// </summary>
+        public static string MatchTrigger(string line)
         {
-            if (string.IsNullOrEmpty(line)) return false;
+            if (string.IsNullOrEmpty(line)) return null;
             foreach (string trigger in Triggers)
             {
-                if (line.IndexOf(trigger, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (line.IndexOf(trigger, StringComparison.OrdinalIgnoreCase) >= 0) return trigger;
             }
-            return false;
+            return null;
         }
+
+        /// <summary>
+        /// Opens a game or Steam file passively: read-only, and sharing read,
+        /// write and delete, so the game (or Steam, or Wine) can always write,
+        /// replace or delete it while it is open. Callers hold it only while
+        /// they read.
+        /// </summary>
+        internal static FileStream OpenPassive(string path) =>
+            new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
         /// <summary>
         /// Resolves EE.log. An explicit path wins; otherwise the Proton prefix is
@@ -129,7 +147,9 @@ namespace WFInfo.Scan
             try
             {
                 if (!File.Exists(cfg)) return null;
-                foreach (string line in File.ReadLines(cfg))
+                using var reader = new StreamReader(OpenPassive(cfg));
+                string line;
+                while ((line = reader.ReadLine()) != null)
                 {
                     if (!line.StartsWith("Flash.FlashDrawScale=", StringComparison.OrdinalIgnoreCase)) continue;
                     string value = line.Substring("Flash.FlashDrawScale=".Length).Trim();
@@ -210,7 +230,8 @@ namespace WFInfo.Scan
             try
             {
                 if (!File.Exists(vdf)) yield break;
-                text = File.ReadAllText(vdf);
+                using var reader = new StreamReader(OpenPassive(vdf));
+                text = reader.ReadToEnd();
             }
             catch (IOException)
             {
@@ -244,9 +265,17 @@ namespace WFInfo.Scan
     }
 
     /// <summary>
-    /// Pull-based tail of a text file. The caller reads it on each poll or file
-    /// event (see ScanWatcher); a read with nothing new costs one open and one
-    /// small probe, so extra wake-ups are harmless.
+    /// Pull-based tail of a text file. The caller reads it on each file event
+    /// or backup poll (see ScanWatcher); a read with nothing new costs one open
+    /// and one small probe, so extra wake-ups are harmless.
+    ///
+    /// Passive by construction: the file is opened read-only with
+    /// FileShare.ReadWrite | FileShare.Delete (<see cref="EeLog.OpenPassive"/>)
+    /// and closed after each read, so the game can always write, rotate or
+    /// delete it. It starts at the current end of the file, so text written
+    /// before the watch started is never read. <see cref="ReadNewMatches"/>
+    /// returns only what the matcher returns (trigger phrases), so no other
+    /// EE.log text leaves this class.
     ///
     /// The log is replaced rather than appended to when the game starts a new
     /// session, and a replacement can be longer than what was already read — so
@@ -282,8 +311,7 @@ namespace WFInfo.Scan
             }
         }
 
-        private FileStream Open() =>
-            new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        private FileStream Open() => EeLog.OpenPassive(_path);
 
         /// <summary>Remembers the bytes just before the start position, for the continuity check.</summary>
         private void PrimeTailCheck(FileStream stream)
@@ -309,10 +337,23 @@ namespace WFInfo.Scan
         }
 
         /// <summary>
-        /// Returns the complete lines appended since the previous call. A file
-        /// that was truncated or replaced is re-read from the start.
+        /// Reads the complete lines appended since the previous call (a file that
+        /// was truncated or replaced is re-read from the start) and returns, in
+        /// order, the non-null results of <paramref name="match"/>. The lines
+        /// themselves are discarded here.
         /// </summary>
-        public IReadOnlyList<string> ReadNewLines()
+        public IReadOnlyList<string> ReadNewMatches(Func<string, string> match)
+        {
+            var matches = new List<string>();
+            foreach (string line in ReadNewLines())
+            {
+                string hit = match(line);
+                if (hit != null) matches.Add(hit);
+            }
+            return matches;
+        }
+
+        private List<string> ReadNewLines()
         {
             var lines = new List<string>();
 

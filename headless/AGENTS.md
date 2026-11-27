@@ -45,9 +45,8 @@ code type-checks without WPF/WinForms/Win32.
   expires) and writes no record for a screen it could not read. EE.log lives in
   the Steam/Proton prefix (macOS: `~/Library/Application Support/Steam`
   compatdata, or a CrossOver bottle; the newest log wins); `--log`/
-  `$WFINFO_EE_LOG` override the search. Linux polls EE.log every 250 ms;
-  macOS reacts to file events (FileSystemWatcher, backed by FSEvents) with a
-  3 s backup poll, and falls back to the 250 ms poll if the watcher fails.
+  `$WFINFO_EE_LOG` override the search. The watch is event-based on every OS
+  (see "Log-watch contract").
 - `macos/` — the macOS platform code (real behavior, not seams):
   `wfinfo-mac.swift` (Swift helper: `rewards`, `selfcheck`, `ocr`, `devices`,
   `displays`, `windows`, `capture`, `hotkey`, `synth`; JSON on stdout; Vision
@@ -64,6 +63,12 @@ code type-checks without WPF/WinForms/Win32.
   only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target
   `PublishMacHelper` copies it into the `dotnet publish` folder, also on
   macOS only.
+  The helper MUST build with
+  the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
+  SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
+  Today that is only compute-device pinning
+  (`RecognizeTextRequest.supportedComputeStageDevices`/`setComputeDevice`);
+  everything else the helper uses is macOS 14/15 API.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
   and reads in memory and writes the capture only into `scans/` (`--save`).
   Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
@@ -109,6 +114,29 @@ code type-checks without WPF/WinForms/Win32.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
   `notify-send` (verdict); the flake's dev shell and the `.#scan` app put all
   three on PATH, so never assume they exist system-wide.
+- Log-watch contract (EE.log; binding, every OS):
+  - Events, not polling: a `FileSystemWatcher` on the log's directory,
+    filtered to the log's file name (inotify / FSEvents /
+    ReadDirectoryChangesW), so a replaced log is seen. A 3 s backup poll
+    covers missed events and session replacement. A buffer overflow only
+    forces a read; any other watcher error or a missing directory switches to
+    a 250 ms poll and retries the watcher every 10 s.
+  - Passive: open game and Steam files only through `EeLog.OpenPassive`
+    (read-only, `FileShare.ReadWrite | FileShare.Delete`) and close them
+    after each read. Never write, rename or create anything in the game's
+    folders or the Wine/Proton/CrossOver prefix; never touch the game's
+    process, memory or input.
+  - Private: `LogTail.ReadNewMatches` returns only trigger phrases. No other
+    EE.log text may be printed, logged (`debug.log`), stored (scan record) or
+    sent anywhere: EE.log holds PC specs, the public IP and the account
+    e-mail. Print the trigger phrase, never the line.
+  - Scope: read only what WFInfo itself reads from the game (EE.cfg; the
+    EE.log lines that WFInfo gets from the debug channel). Add no new game
+    file without the user's approval (EULA risk). The "Game access" table in
+    `README.md` lists every access; keep it current.
+  - Wine/Proton/CrossOver: the game writes EE.log into a host folder, so host
+    events fire; Wine share modes do not bind host processes. Writes can be
+    buffered, so a trigger can be late; the scan's re-capture wait covers it.
 - The scan reads `market_items.json`/`market_data.json` straight from disk
   instead of calling `Data.Update()`: a hotkey press must not wait for a network
   database refresh. Deeper price lookups go through `PriceCache`
@@ -153,6 +181,11 @@ code type-checks without WPF/WinForms/Win32.
   `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
   appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
   and SIP strips `DYLD_*` there).
+- `scans/last.png` and `scans/latest.json` are one pair: write both under
+  per-process temporary names in `scans/` (`last.png.<pid>.tmp`,
+  `latest.json.<pid>.tmp`), then rename the screenshot and the record last.
+  Never write either file in place. Stale `.tmp` files (owner process gone,
+  or older than 10 minutes) are deleted at the next scan start.
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
@@ -174,6 +207,7 @@ code type-checks without WPF/WinForms/Win32.
     `XDG_CONFIG_HOME` there.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
+    Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
     Trimmed; blank counts as unset. On macOS a missing file is an error
     (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
@@ -245,7 +279,9 @@ code type-checks without WPF/WinForms/Win32.
   <path> --no-notify` — with a reward screen on the captured output, appending a
   line containing "Got rewards" to `<path>` must produce one priced record and
   exit 0. This is the trigger-path check that needs no game session; verify it
-  before claiming the watch works.
+  before claiming the watch works. Test a replaced log too (write a new file,
+  rename it over the log), and check that no non-trigger line appears in the
+  output, `debug.log` or the scan record.
 - macOS: `dotnet run --project headless -- --selfcheck` (Vision) — PASS, and
   no libgdiplus in the loaded images (see the proof above).
 - macOS: `cd headless/macos/layout && cargo test` — the layout cases and the

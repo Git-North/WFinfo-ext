@@ -77,6 +77,10 @@ dotnet run --project headless -- --scan --watch                # scan on every r
   Vision stage that lists it (`wfinfo-mac devices`). Vision accepts the pin;
   timings are nearly the same on every device, so they do not show which unit
   ran the model.
+  Pinning needs a helper built with Xcode 26 or later (the macOS 26 SDK). A
+  helper built with Xcode 16 (the macOS 15 SDK) builds and runs, uses Vision's
+  automatic device, and prints a note for `--device ane|gpu|cpu`;
+  `wfinfo-mac devices` then reports `"canPinComputeDevice": false`.
 - `--watch` finds `EE.log` in Steam's compatibility prefix
   (`~/Library/Application Support/Steam/steamapps/compatdata/230410/pfx/...`)
   or in a CrossOver bottle. The newest log wins. On macOS the watch reacts
@@ -187,6 +191,10 @@ Each run does this:
    the same rule as the Windows overlay) and is posted with `notify-send`.
 5. Record: `<data dir>/WFInfo/scans/latest.json`, one timestamped copy per run
    (newest 60 kept) and the OCR'd screenshot as `scans/last.png`.
+   `last.png` and `latest.json` are published as a pair: both are written
+   under temporary names in `scans/` first, then renamed into place
+   (screenshot first, record last). A scan that is killed leaves the previous
+   pair as it was; a later run deletes its `.tmp` files.
 
 `<data dir>/WFInfo/price_cache.json` holds the platinum cache keyed by
 warframe.market slug (`plat`, 48-hour `volume`, `fetchedAt`). Failed fetches are
@@ -197,8 +205,9 @@ stale price.
 
 The Windows app has an "Auto" mode: it reads Warframe's debug log and shows the
 overlay as soon as the game reports a reward screen. `--watch` is the Linux
-equivalent — it tails `EE.log` in the Proton prefix and runs a scan for every
-reward screen. The trigger is the same message the Windows watcher keys on,
+equivalent — it watches `EE.log` in the Proton prefix (macOS: Steam's
+compatibility prefix or a CrossOver bottle) and runs a scan for every reward
+screen. The trigger is the same message the Windows watcher keys on,
 `ProjectionRewardChoice.lua: Got rewards`.
 
 ```bash
@@ -224,6 +233,52 @@ The game writes the trigger line *before* the reward panel is on screen, so a
 triggered scan re-captures every 400 ms until a part is recognised or `--wait`
 runs out. A capture that finds nothing yet writes no record, so the dashboard
 only shows scans whose names were read.
+
+The watch is event-based on every OS: a file watcher on the log's folder
+(inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows),
+filtered to the log's name, so a log that the game replaces is still seen. A
+backup check every 3 s catches missed events. If the watcher fails (for
+example, the Linux inotify watch limit), the watch checks every 250 ms and
+tries the watcher again every 10 s. Measured delay from the log line to the
+trigger: about 28 ms on macOS (FSEvents) and 6–17 ms on Linux (inotify); the
+earlier 250 ms poll took about 208 ms on Linux.
+
+### Game access
+
+What the scanner touches in Warframe's files, and what it never does:
+
+| File | Access | Use |
+|---|---|---|
+| `EE.log` (the game's log) | read only, while the watch runs | finds the two reward-screen lines |
+| `EE.cfg` (the game's settings) | read only, once per scan start | the UI scale (`Flash.FlashDrawScale`), as WFInfo does |
+| `steamapps/libraryfolders.vdf` (Steam) | read only, at start | finds Steam libraries on other drives, to locate `EE.log` |
+| The screen | capture (grim, or ScreenCaptureKit on macOS) | reads the reward names, as WFInfo does |
+
+- Every file is opened read-only with `FileShare.ReadWrite | FileShare.Delete`
+  and closed after each read, so the game can always write, replace or delete
+  it. Reading starts at the end of `EE.log`: text written before the watch
+  started is not read.
+- The scanner never writes, renames or creates anything in the game's
+  folders or in the Wine/Proton/CrossOver prefix. It never touches the game's
+  process or memory, never sends input to the game, and never changes game
+  files. It writes only its own app dir (`scans/`, `price_cache.json`,
+  `debug.log`).
+- Only the two trigger lines are used ("Got rewards", "Pause countdown done").
+  `EE.log` also holds PC specs, the public IP address and the account e-mail,
+  so no other line is printed, logged, or stored. The scanner prints only the
+  trigger phrase, not the line.
+- Wine/Proton/CrossOver: the game writes `EE.log` through Wine into a normal
+  folder on the host, so host file events fire as usual. Wine's file-sharing
+  checks apply only between Wine processes, so a host process cannot block
+  the game. The game can buffer its log writes, so a trigger can arrive late;
+  the scan's re-capture wait (`--wait`) covers that.
+- Context: Warframe uses no client anti-cheat such as EasyAntiCheat or
+  BattlEye; Digital Extremes uses its own server-side checks. DE's "Third-Party
+  Software and You" (2022) says third-party tools are used at your own risk,
+  and bans altering game files, cheating, exploiting and automation. The
+  scanner does none of those. The Windows WFInfo app reads the same lines from
+  the game's debug output; its opt-in text calls them "the same info being
+  written to EE.log".
 
 Bind the watch to a session start (mango example):
 
