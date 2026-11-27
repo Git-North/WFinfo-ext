@@ -15,6 +15,8 @@
     <!-- Legacy code uses BinaryFormatter and Win32-only APIs behind runtime guards. -->
     <NoWarn>$(NoWarn);SYSLIB0011;CA1416;CS0649;CS0169;CS0067</NoWarn>
     <StartupObject>WFInfo.HeadlessProgram</StartupObject>
+    <!-- macOS (Homebrew) may ship only a newer .NET runtime; run on it when 9 is absent. -->
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
@@ -52,7 +54,34 @@
     <Compile Include="Program.cs" />
     <Compile Include="Platform\*.cs" />
     <Compile Include="Scan\*.cs" />
+    <Compile Include="macos\*.cs" />
   </ItemGroup>
+
+  <!--
+    macOS: compile the Swift helper (Vision OCR, displays/windows, ScreenCaptureKit
+    capture, global hotkey) next to the runner. Other hosts skip this target.
+  -->
+  <PropertyGroup>
+    <!-- RecognizeTextRequest (Swift Vision API) needs macOS 15. swiftc ignores
+         MACOSX_DEPLOYMENT_TARGET, so the target triple carries the minimum. -->
+    <MacHelperMinimumOS>15.0</MacHelperMinimumOS>
+    <MacHelperArch Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">arm64</MacHelperArch>
+    <MacHelperArch Condition="'$(MacHelperArch)' == ''">x86_64</MacHelperArch>
+  </PropertyGroup>
+
+  <Target Name="BuildMacHelper" AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))"
+          Inputs="$(MSBuildThisFileDirectory)macos/wfinfo-mac.swift;$(MSBuildThisFileFullPath)"
+          Outputs="$(OutDir)wfinfo-mac">
+    <Exec Command="swiftc -O -target $(MacHelperArch)-apple-macos$(MacHelperMinimumOS) -o &quot;$(OutDir)wfinfo-mac&quot; &quot;$(MSBuildThisFileDirectory)macos/wfinfo-mac.swift&quot;" />
+  </Target>
+
+  <!-- macOS: `dotnet publish` copies only the build's .NET outputs, so copy the
+       helper into the publish folder too. Other hosts skip this target. -->
+  <Target Name="PublishMacHelper" AfterTargets="Publish" DependsOnTargets="BuildMacHelper"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Copy SourceFiles="$(OutDir)wfinfo-mac" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="System.Drawing.EnableUnixSupport" Value="true" />

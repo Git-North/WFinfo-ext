@@ -1,8 +1,8 @@
-# WFInfo.Headless — run WFInfo's OCR core natively on Linux
+# WFInfo.Headless — run WFInfo's OCR core natively on Linux and macOS
 
 A .NET 9 console runner that links the real WFInfo core sources (`Ocr.cs`,
 `Data.cs`, language processors, Tesseract service, settings, test harness) and
-runs them on Linux without WPF/WinForms/Win32. No code forks, no mocks: the OCR
+runs them on Linux and macOS without WPF/WinForms/Win32. No code forks, no mocks: the OCR
 suite and theme detector execute the production pipelines.
 
 ## Quick start
@@ -19,13 +19,82 @@ The dev shell wires up native `libtesseract50.so`/`libleptonica-1.82.0.so`
 (exact sonames the wrapper dlopens), `libgdiplus` (System.Drawing), fonts, and
 `.NET` runtime libs via environment variables.
 
+## macOS (Apple Silicon, no Nix)
+
+The runner builds on macOS with Homebrew's .NET, and a small Swift helper,
+`wfinfo-mac`, gives it Apple's Vision framework (the Swift
+`RecognizeTextRequest` API, accurate mode; Vision can run it on the Neural
+Engine) and ScreenCaptureKit. The helper needs macOS 15 or later.
+`--selfcheck` reads its sample with Vision and loads no libgdiplus. It proves
+the Vision stack only: it does not run WFInfo's own pipeline (tessdata,
+System.Drawing). `--selfcheck --ocr tesseract` checks that pipeline.
+
+WFInfo's own pipeline (`--test`, `--theme-test`, `--scan`, `--selfcheck --ocr
+tesseract`) runs on `System.Drawing` and Tesseract, so on macOS it needs
+`mono-libgdiplus` and `tesseract`. Screen capture for `--scan` is still grim
+(Linux) in this runner.
+
+```bash
+brew install dotnet
+brew install mono-libgdiplus tesseract           # optional: only for WFInfo's own pipeline (--test, --theme-test, --scan)
+dotnet build headless/WFInfo.Headless.csproj     # also compiles headless/macos/wfinfo-mac
+dotnet run --project headless -- --selfcheck     # Vision (CoreText sample, no libgdiplus)
+dotnet run --project headless -- --selfcheck --ocr tesseract   # WFInfo's Tesseract stack
+```
+
+- The project targets net9.0 and rolls forward to the newest installed runtime
+  (`RollForward=Major`), so Homebrew's .NET is enough.
+- `mono-libgdiplus` and `tesseract` are optional. The modes that run
+  WFInfo's own pipeline link Homebrew's libraries when they start (see
+  `macos/MacNative.cs`), or name the `brew install` command when one is
+  missing. The Vision self-check never loads them.
+- The app dir is `~/Library/Application Support/WFInfo`. `WFINFO_DATA_DIR` has
+  no effect on macOS.
+- `wfinfo-mac capture`/`rewards` need **Screen Recording** for the app that
+  starts them: System Settings > Privacy & Security > Screen & System Audio
+  Recording. Restart that app after the change.
+- The first Vision call of a new helper binary prepares Apple's models (40–50 s
+  once). Later calls take about 190 ms for one part image and about 250 ms for
+  eight in one call (accurate mode).
+- `--device` (or `WFINFO_VISION_DEVICE`) pins the compute device for every
+  Vision stage that lists it (`wfinfo-mac devices`). Vision accepts the pin;
+  timings are nearly the same on every device, so they do not show which unit
+  ran the model.
+
+The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
+
+| Command | Effect |
+|---|---|
+| `wfinfo-mac ocr [--fast] [--correction] [--lang en-US] [--device auto\|ane\|gpu\|cpu] <png>... \| - \| --frames` | Vision text, lines, boxes (pixels, top-left origin) and confidences as JSON; up to 4 images run at the same time, results keep input order. `--frames` reads images from stdin, each a 4-byte big-endian length and the PNG |
+| `wfinfo-mac devices` | compute devices Vision offers for text recognition |
+| `wfinfo-mac displays` / `windows` | displays and on-screen windows (ids for the helper's `--display`/`--window`) |
+| `wfinfo-mac capture [--display <id> \| --window <id>] <out.png> \| -` | one ScreenCaptureKit screenshot; `-` writes the PNG to stdout |
+| `wfinfo-mac rewards [--display\|--window\|--file] --reward-width 968 --reward-height 235 --reward-y 316 --line-height 48 --ui-scale <u> [--save <png>]` | capture (or read), crop the reward-name rows, read them with Vision (the strip plus narrow per-card tiles when the UI scale is known); every line in the crop with full-image boxes as JSON |
+| `wfinfo-mac selfcheck` | render "Volt Prime Blueprint" with CoreText and read it |
+| `wfinfo-mac synth --out <png> --names "A\|B" [--ui-scale u] [--color #hex] [--squad "p1\|p2"]` | synthetic reward screen for tests |
+| `wfinfo-mac hotkey [--key ctrl+option+s] [--url <scan url>]` | global hotkey that starts a dashboard scan |
+
+The helper takes `--display`/`--window`. The runner's `--scan` does not take
+these ids: its `--output` and `--region` name grim/wlr-randr outputs and
+layout geometry (Linux).
+
+`rewards` returns every line it reads in the crop, also text that is not a
+reward name (for example squad names). The crop is generous on purpose. The
+caller keeps only the lines inside the name rows.
+
+`hotkey` uses a Carbon hotkey, so it needs no Accessibility permission. Run it
+next to the dashboard:
+`wfinfo-mac hotkey --url http://127.0.0.1:8000/scan/run`. `--fire` sends one
+request and exits. Log lines show the URL without user, password, query or
+fragment.
+
 ## CLI
 
 | Command | Effect |
 |---|---|
 | `--test <map.json> [out.json]` (or plain `<map.json>`) | OCR regression suite |
 | `--theme-test <folder> [uiScale]` (`--theme-debug` also works) | theme detection over PNGs |
-| `--selfcheck` | renders sample text and OCRs it — verifies natives + tessdata + imaging |
+| `--selfcheck [--ocr <engine>]` | renders sample text and OCRs it — Tesseract: natives + tessdata + imaging; Vision (macOS default): the helper and Vision only |
 | `--scan [options]` | reward-screen scan: capture, OCR, price, notify, record |
 | `--scan --watch` | scan automatically on every reward screen (EE.log), until stopped |
 
@@ -195,13 +264,24 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   `libleptonica-1.82.0.so` (set by `nix develop`; override for other distros).
 - `WFINFO_DATA_DIR` — application-data root override. tessdata and the market
   databases are stored under `<data dir>/WFInfo` (default: OS XDG config dir).
+  No effect on macOS (the runner warns): .NET does not read `XDG_CONFIG_HOME`
+  there.
 - `WFINFO_EE_LOG` — path to Warframe's `EE.log` for `--watch`; overrides the
   Steam/Proton prefix search (same as `--log`).
+- `WFINFO_OCR_ENGINE` — default for `--selfcheck --ocr`: `auto` (Vision on
+  macOS when the helper is built, else Tesseract), `vision` or `tesseract`.
+- `WFINFO_VISION_DEVICE` — Vision compute device: `auto` (Vision chooses),
+  `ane`, `gpu` or `cpu`.
+- `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+  White space around the path is ignored, and a blank value counts as unset.
+  On macOS a path to a missing file is an error; it does not fall back to
+  Tesseract.
 
 ## Architecture
 
 - `WFInfo.Headless.csproj` links shared sources from `../WFInfo` — this list is
   the core boundary.
+- `macos/` holds the macOS code: the Swift helper and its C# callers.
 - `Platform/` holds compile-time seams only (see `AGENTS.md` in this folder):
   stubs for Windows-only classes referenced by shared code, WPF/WinForms type
   shims, and a Bitmap→Pix bridge (lossless PNG round-trip).
