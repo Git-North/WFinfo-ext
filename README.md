@@ -122,6 +122,64 @@ nix flake check              # format, typecheck, and unit tests in a sandbox
 nix build .#tesseract-native # native-library output, for use in CI
 ```
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the checks on GitHub-hosted runners. It runs on
+each push to `master`, on each pull request, and on manual start
+(`workflow_dispatch`). A new push cancels the older run of the same branch.
+
+| Job | Runner | Steps |
+| --- | --- | --- |
+| Linux | `ubuntu-latest` | `nix flake check`, build `headless/`, `--selfcheck` |
+| Dashboard | `ubuntu-latest` | `deno fmt --check`, `deno check src`, `deno lint`, `deno test -A src` |
+| macOS | `macos-latest` (Apple Silicon) | build `headless/` (.NET 9), Swift packages under `headless/`, dashboard checks |
+| Windows (best effort) | `windows-latest` | build `WFInfo.sln` (Release), build `headless/`, dashboard checks |
+
+- Linux and macOS must pass. The Windows job does not block: a failure there
+  does not fail the workflow. Its job summary shows the result of each build.
+- Each job installs only the tools for its own OS. Nix runs only on Linux, and
+  Swift only on macOS.
+
+- `--selfcheck` downloads `eng.traineddata` from GitHub on the first run, so
+  the Linux job needs network access.
+- The macOS job builds each `Package.swift` under `headless/`. If there is no
+  `Package.swift`, the step skips. The build uses only the versions in
+  `Package.resolved` (`--force-resolved-versions`), so commit that file with a
+  package that has dependencies.
+- Each third-party action is pinned to a full commit SHA. A comment gives the
+  release tag.
+- The CI Deno version must be equal to the Deno version in `flake.lock`. If you
+  update `flake.lock`, update `DENO_VERSION` in the workflow.
+- On a fork, GitHub disables Actions until the owner enables them (repository
+  Actions tab).
+
+### SonarQube
+
+`.github/workflows/sonarqube.yml` sends the code to SonarQube Cloud (project
+`Git-North_WFinfo-ext`, organization `son-north`). It runs on the same events.
+
+- It uses SonarScanner for .NET around `dotnet build
+  headless/WFInfo.Headless.csproj`. Multi-language mode (`sonar.scanner.scanAll`)
+  also analyzes the dashboard TypeScript and the other text files.
+- C# is analyzed only where the headless build compiles it: the shared core and
+  `headless/`. The Windows-only UI sources are not analyzed.
+- The job runs `deno test -A --coverage` in `dashboard/` and sends the lcov
+  report (`sonar.javascript.lcov.reportPaths`), so the quality gate sees the
+  TypeScript coverage. The repository has no .NET unit tests, so there is no
+  C# coverage report.
+- Login is secretless (GitHub OIDC). No `SONAR_TOKEN` secret is necessary for
+  SonarQube Cloud. Automatic Analysis must stay off for the project.
+- On a pull request, the job waits for the quality gate. If the gate fails, the
+  check fails.
+- A pull request from another repository gets no OIDC token, so the job fails
+  with an error.
+- For a self-hosted SonarQube Server, set the `SONAR_HOST_URL` variable and the
+  `SONAR_TOKEN` secret.
+- The job runs on `ubuntu-latest`. If a `Package.swift` is under `headless/`, it
+  runs on `macos-15`.
+- Do not add `sonar-project.properties`, because SonarScanner for .NET does not
+  run with it. `.sonar-config.json` links the `sonar` CLI to the project.
+
 ## Environment
 
 - `WFINFO_DATA_DIR` — application-data root. The default is the XDG config
