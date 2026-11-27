@@ -71,12 +71,15 @@ and reports the outcome. It is an "independent digital service" (see
   `timeout`.
 - Kill the process group, never only `sh`: the command runs detached (own
   session and group, POSIX), and the deadline sends SIGKILL to the negative
-  pid. Children that survive keep the output pipes open, and `output()` then
-  waits until they end. dash (Debian/Ubuntu `/bin/sh`) forks even a single
-  command, and `nix run` always starts `dotnet`. The group is out of reach of
-  the terminal's Ctrl-C and hang-up, so `main.ts` stops the run on SIGHUP,
-  SIGINT, SIGTERM and `unload`. On Windows the command is not detached and
-  only the direct child is killed.
+  pid. Children that survive keep the output pipes open. dash (Debian/Ubuntu
+  `/bin/sh`) forks even a single command, and `nix run` always starts
+  `dotnet`. The group is out of reach of the terminal's signals, so `main.ts`
+  stops the run on SIGHUP, SIGINT, SIGQUIT, SIGTERM and `unload`. On Windows
+  the command is not detached and only the direct child is killed.
+- The run ends when `sh` exits. Output that arrives after that is read for
+  at most 1 s: a process that left the group (its own `setsid`) and kept the
+  pipes cannot hold the scanner. Processes that closed the pipes and outlive
+  `sh` (dotnet's MSBuild reuse node) are left to end by themselves.
 - The Scan page offers the host's displays and windows, and the choice is
   resolved on the server: the form carries an output name (`display:DP-2`) or a
   client id (`window:7`), and `src/lib/targets.ts` turns it into `--output` or
