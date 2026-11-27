@@ -148,22 +148,42 @@ jobs:
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
-      # Coverage of the dashboard TypeScript for SonarQube (the new_coverage
-      # condition). The raw data and the report go to the runner's temp dir,
-      # outside the checkout, so the scan does not analyze them as sources.
-      # A failing test does not stop the analysis: the CI workflow is the
-      # test gate, and the report still covers every test that ran.
-      - name: Dashboard coverage (lcov)
-        working-directory: dashboard
+      - name: Install cargo-llvm-cov (Rust coverage, macOS)
+        if: runner.os == 'macOS'
         env:
-          COVERAGE_DIR: ${{ runner.temp }}/dashboard-coverage
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install cargo-llvm-cov
+
+      # In the crate folder, so the component goes into the toolchain that
+      # rust-toolchain.toml selects.
+      - name: Add the LLVM tools for Rust coverage
+        if: runner.os == 'macOS'
+        working-directory: headless/macos/layout
+        run: rustup component add llvm-tools-preview
+
+      # Coverage for SonarQube (the new_coverage condition): tests/run.ts runs
+      # the tests and writes one report per language, plus sonar.args with the
+      # scanner arguments for the reports that exist. The reports go to the
+      # runner's temp dir, outside the checkout, so the scan does not analyze
+      # them as sources. A failing test does not stop the analysis: the CI
+      # workflow is the test gate, and the reports still cover the tests that
+      # ran. The Linux fallback runner measures the dashboard only: without the
+      # macOS runner there is no Swift package to analyze.
+      - name: Test coverage
         run: |
           set -uo pipefail
-          if ! deno test -A --coverage="$COVERAGE_DIR/raw" src; then
-            echo "::warning::Some dashboard tests failed; the CI workflow reports them. Coverage covers the tests that ran."
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            suites=(dashboard rust swift dotnet)
+          else
+            suites=(dashboard)
           fi
-          deno coverage "$COVERAGE_DIR/raw" --lcov --output="$COVERAGE_DIR/dashboard.lcov"
-          echo "$(grep -c '^SF:' "$COVERAGE_DIR/dashboard.lcov") source files in the lcov report"
+          if ! deno run -A tests/run.ts "${suites[@]}" --coverage "$RUNNER_TEMP/coverage"; then
+            echo "::warning::Some tests or coverage reports failed; the CI workflow reports test failures. Coverage covers the tests that ran."
+          fi
+          # No arguments file means no coverage at all: fail rather than
+          # analyze with a coverage of zero.
+          [ -s "$RUNNER_TEMP/coverage/sonar.args" ]
 
       # Right before the scan, because the token lasts 30 minutes.
       - name: SonarQube Cloud authentication (OIDC)
@@ -204,13 +224,25 @@ jobs:
           exclusions='**/bin/**,**/obj/**,**/.build/**,**/tessdata/**'
           exclusions+=',WFInfo/Resources/**,WFInfo/lib/**,docs/assets/**'
           exclusions+=',**/*.min.js,**/*.min.css,.opencode/**'
+          exclusions+=',**/target/**' # cargo build output
+
+          # Left out of coverage only (still analyzed for issues). Keep this
+          # list short: thin glue, or files with no code a test can run.
+          # - Notifier.cs only builds the arguments of osascript / notify-send
+          #   and starts it; a test would post real desktop notifications.
+          # - Package.swift is the SwiftPM manifest (build settings).
+          coverage_exclusions='headless/Scan/Notifier.cs,headless/macos/Package.swift'
           args+=(
             /d:sonar.projectBaseDir="$GITHUB_WORKSPACE"
             /d:sonar.scanner.scanAll=true
             /d:sonar.exclusions="$exclusions"
-            /d:sonar.test.inclusions='dashboard/src/**/*_test.ts,dashboard/src/lib/testutil.ts'
-            /d:sonar.javascript.lcov.reportPaths="$RUNNER_TEMP/dashboard-coverage/dashboard.lcov"
+            /d:sonar.test.inclusions='dashboard/src/**/*_test.ts,dashboard/src/lib/testutil.ts,tests/**,headless/**/tests/**'
+            /d:sonar.coverage.exclusions="$coverage_exclusions"
           )
+          # One scanner argument per line (macOS bash 3.2 has no mapfile).
+          while IFS= read -r argument; do
+            args+=("$argument")
+          done < "$RUNNER_TEMP/coverage/sonar.args"
           # Pull requests wait for the quality gate; `end` fails if it fails.
           if [ "$IS_PR" = "true" ]; then
             args+=(/d:sonar.qualitygate.wait=true /d:sonar.qualitygate.timeout=600)
