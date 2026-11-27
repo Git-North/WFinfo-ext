@@ -261,7 +261,10 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
 }
 ```
 
-- Keys are always present; numbers are `null` when unknown.
+- Keys are always present, except `OcrEngine` in records written before that
+  field existed; numbers are `null` when unknown.
+- `CaptureSource`: `grim` (Linux capture), `screencapturekit` (macOS
+  capture) or `file` (`--file`).
 - `Choices[]` is in screen order, `Index` starts at 1; `Part` is the
   OCR-corrected market name, `Slug` the warframe.market `url_name`.
 - `PlatSource`: `wfm` (fetched this run), `cache`, `sheet` (offline fallback) or
