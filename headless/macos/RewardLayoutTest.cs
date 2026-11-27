@@ -11,7 +11,9 @@ namespace WFInfo.MacOS
     /// the <c>wfinfo-mac rewards</c> JSON shape. The fixture boxes follow WFInfo's
     /// geometry (1080p units times su = s*u): name glyphs 17 tall, line advance 20,
     /// first line top 4 below the row top; squad names 14 tall, 4 below the row
-    /// bottom; "1 OWNED" 14 tall, 60 above the row top.
+    /// bottom; "1 OWNED" 14 tall, 60 above the row top (the band filter drops it).
+    /// Case (a) puts the header inside the band tolerance instead, so the
+    /// header-group rule must drop it.
     /// </summary>
     internal static class RewardLayoutTest
     {
@@ -22,7 +24,7 @@ namespace WFInfo.MacOS
         {
             var cases = new List<(string name, Func<string> check)>
             {
-                ("(a) 4 slots 1920x1080 u=1.0 known, wrapped name, squad + OWNED", CaseA),
+                ("(a) 4 slots 1920x1080 u=1.0 known, wrapped name, squad + in-band OWNED", CaseA),
                 ("(b) 3 slots 2560x1440 u=0.8 unknown", CaseB),
                 ("(c) 2 slots 3440x1440 u=1.0 unknown (21:9, s=1.333)", CaseC),
                 ("(d) 1 slot 1728x1117 u=1.25 known", CaseD),
@@ -63,11 +65,12 @@ namespace WFInfo.MacOS
             {
                 f.Name(i, 4, names[i]);
                 f.Squad(i, 4, squad[i]);
-                if (i != 1) f.Owned(i, 4, "1 OWNED");
+                if (i != 1) f.OwnedInBand(i, 4, "1 OWNED");
             }
             return Expect(f, "Forma Blueprint", "Lex Prime Receiver", "Nikana Prime Blueprint",
                 "Akstiletto Prime Barrel")
-                ?? ExpectSecond(f, 2, "Nikana Prime");
+                ?? ExpectSecond(f, 2, "Nikana Prime")
+                ?? ExpectHeader(f, new[] { 0, 2, 3 }, "1 OWNED");
         }
 
         private static string CaseB()
@@ -137,7 +140,7 @@ namespace WFInfo.MacOS
             var f = new Fixture(1920, 1080, 0.9, known: false);
             f.Name(0, 1, "Rhino Prime", "Systems Blueprint");
             f.Squad(0, 1, "Lotus");
-            return Expect(f, "Rhino Prime Systems Blueprint");
+            return Expect(f, "Rhino Prime Systems Blueprint") ?? ExpectScale(f, 0.9);
         }
 
         private static string CaseH()
@@ -183,6 +186,20 @@ namespace WFInfo.MacOS
             return c.Count > 1 && c[1] == text ? null : $"slot {slot}: second candidate is not \"{text}\"";
         }
 
+        /// <summary>The header passed the band filter and the header-group rule kept it out of the name.</summary>
+        private static string ExpectHeader(Fixture f, int[] slots, string text)
+        {
+            var r = f.Analyze();
+            foreach (int i in slots)
+            {
+                if (!r.Slots[i].OtherLines.Any(l => l.Text == text))
+                    return $"slot {i}: \"{text}\" is not a header line (dropped by the band filter?)";
+                if (r.Slots[i].Lines.Any(l => l.Text == text))
+                    return $"slot {i}: \"{text}\" is part of the name";
+            }
+            return null;
+        }
+
         private static string ExpectScale(Fixture f, double u)
         {
             var r = f.Analyze();
@@ -220,6 +237,15 @@ namespace WFInfo.MacOS
 
             public void Owned(int i, int n, string text) =>
                 Add(text, SlotX(i, n) - 60 * Su, RowTop - 60 * Su, 14 * Su);
+
+            /// <summary>
+            /// A header inside the band tolerance (centre 11.8*su above the row top,
+            /// tolerance 12*su) but its own row group: its bottom is 8.8*su above the
+            /// name (4*su below the row top), over the 0.6 * median-height join gap
+            /// (8.4*su with this case's 14-tall lines).
+            /// </summary>
+            public void OwnedInBand(int i, int n, string text) =>
+                Add(text, SlotX(i, n) - 60 * Su, RowTop - 18.8 * Su, 14 * Su);
 
             public void Add(string text, double centreX, double top, double height, double? width = null)
             {
