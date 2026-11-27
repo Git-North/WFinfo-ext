@@ -87,6 +87,8 @@ namespace WFInfo.Scan
                 return 1;
             }
 
+            DeleteStalePending();
+
             if (_visionLayout != null) return await RunVisionLayoutAsync(result, startedUtc, watch).ConfigureAwait(false);
 
             // The game announces a reward screen before the panel is on screen
@@ -298,13 +300,16 @@ namespace WFInfo.Scan
             Path.Combine(ScanPaths.ScansDir, string.Format(CultureInfo.InvariantCulture,
                 "capture-{0}-{1}.png", Environment.ProcessId, ++_captureCount));
 
-        /// <summary>The helper's capture becomes scans/last.png (same directory, so a rename).</summary>
+        /// <summary>
+        /// The helper's capture becomes the pending screenshot (same directory, so
+        /// a rename); <see cref="Persist"/> publishes it as scans/last.png.
+        /// </summary>
         private static string MoveToScreenshot(string savedPng)
         {
             try
             {
                 if (string.IsNullOrEmpty(savedPng) || !File.Exists(savedPng)) return null;
-                File.Move(savedPng, ScanPaths.ScreenshotPng, overwrite: true);
+                File.Move(savedPng, PendingScreenshot, overwrite: true);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -559,7 +564,7 @@ namespace WFInfo.Scan
                 if (string.Equals(Path.GetFullPath(sourcePath), Path.GetFullPath(ScanPaths.ScreenshotPng), StringComparison.Ordinal))
                     return ScanPaths.ScreenshotPng;
 
-                File.Copy(sourcePath, ScanPaths.ScreenshotPng, overwrite: true);
+                File.Copy(sourcePath, PendingScreenshot, overwrite: true);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -574,7 +579,7 @@ namespace WFInfo.Scan
         {
             try
             {
-                File.WriteAllBytes(ScanPaths.ScreenshotPng, png);
+                File.WriteAllBytes(PendingScreenshot, png);
                 return ScanPaths.ScreenshotPng;
             }
             catch (Exception ex)
@@ -584,13 +589,35 @@ namespace WFInfo.Scan
             }
         }
 
-        /// <summary>Writes latest.json plus one timestamped record, newest 60 kept.</summary>
+        /// <summary>
+        /// This run's screenshot before it is published: inside scans/ (never
+        /// $TMPDIR), named per process, so a killed scan leaves only this file.
+        /// </summary>
+        private static string PendingScreenshot =>
+            Path.Combine(ScanPaths.ScansDir, "last.png." + Environment.ProcessId + ".tmp");
+
+        private static string PendingRecord =>
+            Path.Combine(ScanPaths.ScansDir, "latest.json." + Environment.ProcessId + ".tmp");
+
+        /// <summary>
+        /// Writes latest.json plus one timestamped record, newest 60 kept.
+        ///
+        /// The screenshot and the record are published as a pair: both are first
+        /// written completely under per-process temporary names in scans/, then
+        /// renamed into place, the screenshot first and the record last. A scan
+        /// killed before the renames leaves the previous last.png/latest.json pair
+        /// untouched (only .tmp files, which a later run deletes), and latest.json
+        /// is never seen half-written.
+        /// </summary>
         private static void Persist(ScanResult result)
         {
             try
             {
                 string json = JsonConvert.SerializeObject(result, Formatting.Indented);
-                File.WriteAllText(ScanPaths.LatestScan, json);
+                File.WriteAllText(PendingRecord, json);
+                if (File.Exists(PendingScreenshot))
+                    File.Move(PendingScreenshot, ScanPaths.ScreenshotPng, overwrite: true);
+                File.Move(PendingRecord, ScanPaths.LatestScan, overwrite: true);
 
                 string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture);
                 File.WriteAllText(Path.Combine(ScanPaths.ScansDir, "scan-" + stamp + ".json"), json);
@@ -607,6 +634,58 @@ namespace WFInfo.Scan
             catch (Exception ex)
             {
                 Main.AddLog("Failed to persist the scan: " + ex.Message);
+                TryDelete(PendingRecord);
+                TryDelete(PendingScreenshot);
+            }
+        }
+
+        /// <summary>
+        /// Deletes pending files that a killed scan left behind: those whose
+        /// process is gone, and any older than ten minutes. A scan still running
+        /// in another process keeps its own.
+        /// </summary>
+        private static void DeleteStalePending()
+        {
+            try
+            {
+                DateTime cutoff = DateTime.UtcNow.AddMinutes(-10);
+                foreach (FileInfo pending in new DirectoryInfo(ScanPaths.ScansDir).GetFiles("*.tmp"))
+                {
+                    // last.png.<pid>.tmp / latest.json.<pid>.tmp
+                    string name = pending.Name;
+                    if (!name.StartsWith("last.png.", StringComparison.Ordinal) &&
+                        !name.StartsWith("latest.json.", StringComparison.Ordinal))
+                        continue;
+                    string[] parts = name.Split('.');
+                    bool ownerGone = parts.Length >= 4 &&
+                        int.TryParse(parts[parts.Length - 2], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) &&
+                        pid != Environment.ProcessId && !ProcessRunning(pid);
+                    if (ownerGone || pending.LastWriteTimeUtc < cutoff)
+                    {
+                        try { pending.Delete(); } catch { /* the next run retries */ }
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
+        private static bool ProcessRunning(int pid)
+        {
+            try
+            {
+                using (Process process = Process.GetProcessById(pid))
+                    return !process.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
             }
         }
 
