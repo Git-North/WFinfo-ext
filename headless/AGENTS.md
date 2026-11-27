@@ -60,6 +60,12 @@ code type-checks without WPF/WinForms/Win32.
   modes only). The csproj target `BuildMacHelper` compiles the helper
   with `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS
   only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+  The helper MUST build with
+  the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
+  SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
+  Today that is only compute-device pinning
+  (`RecognizeTextRequest.supportedComputeStageDevices`/`setComputeDevice`);
+  everything else the helper uses is macOS 14/15 API.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
   and reads in memory and writes the capture only into `scans/` (`--save`;
   the accepted one becomes `scans/last.png`). The `--ocr tesseract` path gets
@@ -146,6 +152,7 @@ code type-checks without WPF/WinForms/Win32.
     `XDG_CONFIG_HOME` there.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
+    Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
 - Environment for OCR data dirs derives from the OS XDG config dir when
   `WFINFO_DATA_DIR` is unset — do not assume Windows `%APPDATA%`. On macOS the
