@@ -108,6 +108,10 @@
             wlr-randr
             wlrctl
             libnotify
+            # The reward-screen dataset tools (tests/dataset/).
+            ffmpeg
+            yt-dlp
+            git
           ];
 
           # .NET's runtime dlopens OpenSSL/ICU; libgdiplus needs its fonts.

@@ -49,4 +49,5 @@ theme detection, run through the production code paths (no mocks/copies).
 
 ## Child DOX Index
 
-None.
+- `dataset/AGENTS.md` — Deno tools that collect and categorise reward-screen
+  images into the git-ignored `../training/` folder, with their offline tests.

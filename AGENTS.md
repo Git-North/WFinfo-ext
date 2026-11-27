@@ -53,6 +53,10 @@ and can start a reward-screen scan from its Scan page.
   (logs, OCR runs, market DBs), plus the browser-triggered scan button.
   Child: `dashboard/AGENTS.md`.
 - `tests/` — OCR/theme regression framework docs + scenario data. Child: `tests/AGENTS.md`.
+- `training/` — local reward-screen dataset, filled by `tests/dataset/`.
+  Root-owned. Git ignores all but its `.gitignore` and `README.md`: never
+  commit an image or an index.
+- `errors/` — shared WFInfo-ext error catalog. Child: `errors/AGENTS.md`.
 - `docs/` — GitHub Pages website (has CNAME/index.html; do not drop engineering
   docs into it), owned at root.
 - `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows),
@@ -157,3 +161,4 @@ Windows-equivalent (Path.Combine semantics) and compile-check them here.
   rules, GOV.UK styling conventions.
 - `tests/AGENTS.md` — OCR/theme regression framework: scenario contract,
   data layout, known gaps.
+- `errors/AGENTS.md` — error catalog format, code ranges, generated codes.
