@@ -108,7 +108,7 @@ code type-checks without WPF/WinForms/Win32.
   "BLUEPRINT" under one card). With a known UI scale, `rewards` therefore also
   reads 7 narrow tiles over the strip (one per card position for 1-4 cards),
   drops tile lines cut by a tile edge, and merges duplicates (longer text
-  wins). Keep this; `headless/macos/tests/rewards_regression.sh` guards it.
+  wins). Keep this; `tests/swift/rewards_regression_test.ts` guards it.
 - On macOS the default `--selfcheck` proves the Vision stack only, not
   WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
@@ -168,7 +168,9 @@ code type-checks without WPF/WinForms/Win32.
   `uiScaleEstimated`, `slots[].candidates`, `notes`, … or `error`). The csproj
   target `BuildRustLayout` runs `cargo build --release --locked` on macOS
   only (output under `obj/rust-layout/`) and copies `libwfinfo_layout.dylib`
-  next to the runner; Linux and Windows builds need no Rust.
+  next to the runner; Linux and Windows builds need no Rust. It uses
+  `cargo rustc --crate-type cdylib`: the crate also lists `rlib` for its
+  tests, and cargo turns LTO off for a build that includes an rlib.
 - The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
   The OCR engine is chosen in `headless/`; use runtime checks
   (`OperatingSystem.IsMacOS()`), never `#if`.
@@ -262,8 +264,9 @@ code type-checks without WPF/WinForms/Win32.
 
 ## Verification
 
-- macOS: `headless/macos/tests/rewards_regression.sh` (dev only) — every case
-  PASS: synthetic reward screens whose name lines `rewards` must all return.
+- `deno run -A tests/run.ts` (repo root) — the fork's tests (see
+  `tests/AGENTS.md`). The `swift` suite holds the `rewards` regression:
+  synthetic reward screens whose name lines `rewards` must all return.
 
 - `nix develop -c dotnet build headless/WFInfo.Headless.csproj` — clean build.
 - `nix develop -c dotnet run --project headless -- --selfcheck` — PASS expected.
@@ -284,8 +287,8 @@ code type-checks without WPF/WinForms/Win32.
   output, `debug.log` or the scan record.
 - macOS: `dotnet run --project headless -- --selfcheck` (Vision) — PASS, and
   no libgdiplus in the loaded images (see the proof above).
-- macOS: `cd headless/macos/layout && cargo test` — the layout cases and the
-  parity fixtures PASS (offline, no capture).
+- `cd headless/macos/layout && cargo test` (macOS or Linux) — the layout cases
+  and the parity fixtures in `tests/` PASS (offline, no capture).
 - macOS: `--scan --no-notify --file <synth png> --ui-scale unknown` — every
   synthetic name priced.
 - macOS: `headless/bin/Debug/net9.0/wfinfo-mac devices` lists the compute

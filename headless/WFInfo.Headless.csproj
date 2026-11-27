@@ -109,4 +109,9 @@
     <RuntimeHostConfigurationOption Include="System.Drawing.EnableUnixSupport" Value="true" />
   </ItemGroup>
 
+  <!-- tests/headless (test code only) calls the runner's internal classes. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="WFInfo.Headless.Tests" />
+  </ItemGroup>
+
 </Project>
