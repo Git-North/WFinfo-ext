@@ -35,6 +35,12 @@ namespace WFInfo.Errors
             @"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])",
             RegexOptions.CultureInvariant, Timeout);
 
+        // Any user's home folder (macOS, Linux, Windows), also when $HOME points
+        // elsewhere (a test root, or the source paths of a build).
+        private static readonly Regex AnyHome = new Regex(
+            @"(?<![\w.~-])(?:/Users/(?!Shared(?:[/\s'"":]|$))[^/\s'"":]+|/home/[^/\s'"":]+|[A-Za-z]:\\Users\\[^\\\s'"":]+)",
+            RegexOptions.CultureInvariant, Timeout);
+
         // An EE.log line: "12.345 Sys [Info]: ...".
         private static readonly Regex LogLine = new Regex(
             @"^[ \t]*\d+\.\d{3}[ \t]+\w+[ \t]+\[\w+\]:.*$",
@@ -58,7 +64,18 @@ namespace WFInfo.Errors
         }
 
         /// <summary>A path with the home directory written as "~".</summary>
-        public static string Path(string path) => Home(path, HomeDirectories());
+        public static string Path(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            try
+            {
+                return AnyHome.Replace(Home(path, HomeDirectories()), "~");
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return TimeoutMarker;
+            }
+        }
 
         /// <summary>The whole scrub: home → "~", then e-mail, IP and EE.log lines removed.</summary>
         public static string Text(string text) => Text(text, HomeDirectories());
@@ -69,7 +86,7 @@ namespace WFInfo.Errors
             if (string.IsNullOrEmpty(text)) return text;
             try
             {
-                string result = Home(text, homes);
+                string result = AnyHome.Replace(Home(text, homes), "~");
                 result = LogLine.Replace(result, LogLineMarker);
                 result = Email.Replace(result, EmailMarker);
                 result = IPv4.Replace(result, IpMarker);

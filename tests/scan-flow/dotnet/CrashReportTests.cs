@@ -30,14 +30,16 @@ namespace WFInfo.ScanFlow.Tests.Errors
         [Fact]
         public void ScrubRemovesHomeEmailIpAndLogLines()
         {
-            string[] homes = { "/Users/ann" };
-            string text = "at X in /Users/ann/src/a.cs:line 3\n/Users/anna/keep\n" +
+            string[] homes = { "/srv/ann" };
+            string text = "at X in /srv/ann/src/a.cs:line 3\n/srv/anna/keep\n" +
+                "/Users/bob/x.cs /home/eve/y C:\\Users\\Joe\\z /Users/Shared/s\n" +
                 "mail ann.example+1@mail.example.com ip 192.168.1.20 v6 fe80::1ff:fe23:4567:890a\n" +
                 "12.345 Sys [Info]: Logged in as ann (public IP 8.8.8.8)\n" +
                 "Time: 17:16:49 Version=1.0.0.0";
             string clean = Redact.Text(text, homes);
             Assert.Contains("in ~/src/a.cs:line 3", clean);
-            Assert.Contains("/Users/anna/keep", clean);
+            Assert.Contains("/srv/anna/keep", clean);
+            Assert.Contains("~/x.cs ~/y ~\\z /Users/Shared/s", clean);
             Assert.DoesNotContain("@", clean);
             Assert.DoesNotContain("192.168", clean);
             Assert.DoesNotContain("fe80", clean);
