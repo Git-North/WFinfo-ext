@@ -87,7 +87,7 @@ namespace WFInfo.Scan
     /// </summary>
     internal static class OverlayPin
     {
-        /// <summary>Steam's overlay web browser, which shows the scan page.</summary>
+        /// <summary>Steam's overlay web browser, which shows the dashboard's /overlay page.</summary>
         public const string Browser = "browser";
 
         /// <summary>The longest one call may take, retries included (the library's default).</summary>

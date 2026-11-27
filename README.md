@@ -139,8 +139,8 @@ Warframe starts, then press "Scan now".
 
 ## Overlay pin (optional Steam plugin)
 
-WFInfo-ext can show its Scan page on top of the game while the reward screen is
-open. It pins the web browser of the Steam overlay when a scan finds reward
+WFInfo-ext can show the dashboard's overlay page (`/overlay`, a compact live
+view of the newest scan) on top of the game while the reward screen is open. It pins the web browser of the Steam overlay when a scan finds reward
 names, and unpins it when the reward screen ends. A pinned window stays visible
 over the game.
 
@@ -160,8 +160,8 @@ socket, and it does not touch the game.
    builds and scans as usual, and the pin is not available.
 
 3. In the game, open the Steam overlay (Shift+Tab), open its web browser, and
-   load the dashboard's Scan page (`http://127.0.0.1:8000/scan`). The plugin can
-   pin only a window that was opened at least once.
+   load the dashboard's overlay page (`http://127.0.0.1:8000/overlay`). The
+   plugin can pin only a window that was opened at least once.
 
 4. Set `"overlayPin": true` in `<data dir>/WFInfo/wfinfo-ext-settings.json`
    (on macOS `~/Library/Application Support/WFInfo/wfinfo-ext-settings.json`).

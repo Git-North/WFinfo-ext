@@ -139,12 +139,14 @@
        target's own dependencies. -->
   <Target Name="BuildRustOverlay" AfterTargets="Build" DependsOnTargets="FindCargo;CompileRustOverlay" />
 
-  <!-- WorkingDirectory: rustup reads rust-toolchain.toml from there. -->
+  <!-- WorkingDirectory: rustup reads rust-toolchain.toml from there.
+       crate-type cdylib: the crate is also an rlib for its tests, and cargo
+       drops LTO when it builds both. -->
   <Target Name="CompileRustOverlay"
           Condition="'$(BuildOverlayClient)' == 'true' And '$(CargoExitCode)' == '0'"
           Inputs="@(RustOverlaySource)"
           Outputs="$(OutDir)$(RustOverlayLibrary)">
-    <Exec Command="cargo build --release --locked --lib" WorkingDirectory="$(RustOverlayDirectory)"
+    <Exec Command="cargo rustc --release --locked --lib --crate-type cdylib" WorkingDirectory="$(RustOverlayDirectory)"
           EnvironmentVariables="CARGO_TARGET_DIR=$(MSBuildThisFileDirectory)obj/rust-overlay" />
     <Copy SourceFiles="$(MSBuildThisFileDirectory)obj/rust-overlay/release/$(RustOverlayLibrary)" DestinationFolder="$(OutDir)" />
   </Target>
