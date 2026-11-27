@@ -142,7 +142,8 @@ Deno.test("POST /scan/run runs the scan command and reports the outcome", async 
       );
 
     const resp = await click();
-    assertEquals(resp.status, 200);
+    // On failure, show the scan's own output, not only the status code.
+    assertEquals(resp.status, 200, await resp.clone().text());
     const data = await resp.json();
     assertEquals(data.ok, true);
     assertEquals(data.exitCode, 0);
