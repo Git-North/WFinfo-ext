@@ -56,6 +56,8 @@ permissions:
 env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   DOTNET_NOLOGO: "1"
+  # Keep equal to DENO_VERSION in ci.yml (the Deno in flake.lock).
+  DENO_VERSION: "2.9.5"
   SCANNER_VERSION: "12.1.0"
 
 jobs:
@@ -142,6 +144,27 @@ jobs:
           dotnet tool install --global dotnet-sonarscanner --version "$SCANNER_VERSION"
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      # Coverage of the dashboard TypeScript for SonarQube (the new_coverage
+      # condition). The raw data and the report go to the runner's temp dir,
+      # outside the checkout, so the scan does not analyze them as sources.
+      # A failing test does not stop the analysis: the CI workflow is the
+      # test gate, and the report still covers every test that ran.
+      - name: Dashboard coverage (lcov)
+        working-directory: dashboard
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/dashboard-coverage
+        run: |
+          set -uo pipefail
+          if ! deno test -A --coverage="$COVERAGE_DIR/raw" src; then
+            echo "::warning::Some dashboard tests failed; the CI workflow reports them. Coverage covers the tests that ran."
+          fi
+          deno coverage "$COVERAGE_DIR/raw" --lcov --output="$COVERAGE_DIR/dashboard.lcov"
+          echo "$(grep -c '^SF:' "$COVERAGE_DIR/dashboard.lcov") source files in the lcov report"
+
       # Right before the scan, because the token lasts 30 minutes.
       - name: SonarQube Cloud authentication (OIDC)
         if: steps.mode.outputs.mode == 'cloud'
@@ -186,6 +209,7 @@ jobs:
             /d:sonar.scanner.scanAll=true
             /d:sonar.exclusions="$exclusions"
             /d:sonar.test.inclusions='dashboard/src/**/*_test.ts,dashboard/src/lib/testutil.ts'
+            /d:sonar.javascript.lcov.reportPaths="$RUNNER_TEMP/dashboard-coverage/dashboard.lcov"
           )
           # Pull requests wait for the quality gate; `end` fails if it fails.
           if [ "$IS_PR" = "true" ]; then

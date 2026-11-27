@@ -16,6 +16,7 @@ import { resolveAppDir } from "./fsdata.ts";
 Deno.test("scan routes: page, API and screenshot against a fixture app dir", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_scan_route_" });
   const savedHome = Deno.env.get("HOME");
+  const savedAppData = Deno.env.get("APPDATA");
   try {
     const appDir = resolveAppDir({ WFINFO_DATA_DIR: root, HOME: root });
     await Deno.mkdir(`${appDir}/scans`, { recursive: true });
@@ -70,6 +71,9 @@ Deno.test("scan routes: page, API and screenshot against a fixture app dir", asy
     // the real user directory before the fixture can be configured.
     Deno.env.set("WFINFO_DATA_DIR", root);
     Deno.env.set("HOME", root);
+    // On Windows the app dir is %APPDATA%\WFInfo, as for the .NET app (which
+    // ignores WFINFO_DATA_DIR there), so APPDATA points at the fixture too.
+    if (Deno.build.os === "windows") Deno.env.set("APPDATA", root);
     const { handler } = await import("../main.ts");
 
     // /scan — the page renders the verdict, the choice table and metadata.
@@ -133,6 +137,8 @@ Deno.test("scan routes: page, API and screenshot against a fixture app dir", asy
   } finally {
     if (savedHome === undefined) Deno.env.delete("HOME");
     else Deno.env.set("HOME", savedHome);
+    if (savedAppData === undefined) Deno.env.delete("APPDATA");
+    else Deno.env.set("APPDATA", savedAppData);
     await Deno.remove(root, { recursive: true });
     assertTrue(!(await exists(root)), "fixture removed");
   }
