@@ -14,6 +14,13 @@ export const DEFAULT_SCAN_TIMEOUT_MS = 180_000;
 /** How much of the command's output is kept for the response. */
 const OUTPUT_TAIL_CHARS = 4000;
 
+/**
+ * How long the output pipes may stay open after `sh` is gone. A process that
+ * left the group (its own `setsid`) and kept the pipes would otherwise hold
+ * the run, and the scanner, until it exits.
+ */
+const PIPE_GRACE_MS = 1000;
+
 export type ScanStatus = "ok" | "failed" | "timeout" | "error";
 
 export interface ScanOutcome {
@@ -33,6 +40,35 @@ export interface ScannerOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Process groups are a POSIX feature; on Windows `Deno.kill` refuses a
+ * negative pid, so there the scanner kills the direct child only.
+ */
+const GROUP_KILL = Deno.build.os !== "windows";
+
+/** Read a stream as text to its end, or until `cancel` stops the read. */
+function collect(stream: ReadableStream<Uint8Array>): {
+  text: Promise<string>;
+  cancel: () => void;
+} {
+  const reader = stream.getReader();
+  const text = (async () => {
+    const decoder = new TextDecoder();
+    let out = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // A cancelled read ends the text where it is.
+    }
+    return out + decoder.decode();
+  })();
+  return { text, cancel: () => void reader.cancel().catch(() => {}) };
+}
+
 /** POSIX single-quote a value for the shell command line. */
 function quoteArg(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -42,6 +78,7 @@ export class Scanner {
   readonly command: string;
   readonly timeoutMs: number;
   #running: Promise<ScanOutcome> | null = null;
+  #child: Deno.ChildProcess | null = null;
 
   constructor(options: ScannerOptions) {
     this.command = options.command.trim();
@@ -97,6 +134,9 @@ export class Scanner {
         stdin: "null",
         stdout: "piped",
         stderr: "piped",
+        // Own session and process group (setsid), so `#kill` reaches every
+        // process the command starts, not only `sh`.
+        detached: GROUP_KILL,
       }).spawn();
     } catch (err) {
       return outcome(
@@ -106,24 +146,29 @@ export class Scanner {
       );
     }
 
+    this.#child = child;
     let timedOut = false;
     const deadline = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The command already exited; there is nothing left to stop.
-      }
+      this.#kill(child);
     }, this.timeoutMs);
 
+    const stdout = collect(child.stdout);
+    const stderr = collect(child.stderr);
     try {
-      const out = await child.output();
-      const decoder = new TextDecoder();
-      const text = `${decoder.decode(out.stdout)}\n${
-        decoder.decode(out.stderr)
-      }`;
-      if (timedOut) return outcome("timeout", out.code, text);
-      return outcome(out.code === 0 ? "ok" : "failed", out.code, text);
+      const { code } = await child.status;
+      // `sh` is gone; the pipes close when the last process that holds them
+      // exits. Stop reading after a grace, so one that escaped the group
+      // kill cannot keep the run busy.
+      const grace = setTimeout(() => {
+        stdout.cancel();
+        stderr.cancel();
+      }, PIPE_GRACE_MS);
+      const [out, errOut] = await Promise.all([stdout.text, stderr.text]);
+      clearTimeout(grace);
+      const text = `${out}\n${errOut}`;
+      if (timedOut) return outcome("timeout", code, text);
+      return outcome(code === 0 ? "ok" : "failed", code, text);
     } catch (err) {
       return outcome(
         "error",
@@ -132,6 +177,28 @@ export class Scanner {
       );
     } finally {
       clearTimeout(deadline);
+      this.#child = null;
+    }
+  }
+
+  /**
+   * Kill the run in flight, if any, with everything it started. The server
+   * calls this on shutdown: the run has its own process group, so a Ctrl-C in
+   * the terminal no longer reaches it.
+   */
+  stop(): void {
+    if (this.#child !== null) this.#kill(this.#child);
+  }
+
+  #kill(child: Deno.ChildProcess): void {
+    try {
+      // A negative pid signals the whole group. Killing `sh` alone (dash
+      // forks even a single command; `nix run` starts `dotnet`) leaves its
+      // children running, and holding the output pipes.
+      if (GROUP_KILL) Deno.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch {
+      // The group already exited; there is nothing left to stop.
     }
   }
 }

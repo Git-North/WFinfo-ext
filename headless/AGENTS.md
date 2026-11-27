@@ -48,7 +48,9 @@ code type-checks without WPF/WinForms/Win32.
   and Tesseract links, only for WFInfo's own pipeline). The csproj target
   `BuildMacHelper` compiles the helper with
   `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS only
-  (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The helper MUST build with
+  (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target `PublishMacHelper`
+  copies it into the `dotnet publish` folder, also on macOS only.
+  The helper MUST build with
   the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
   SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
   Today that is only compute-device pinning
@@ -77,6 +79,15 @@ code type-checks without WPF/WinForms/Win32.
 - The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
   macOS code lives in `macos/` or behind runtime checks
   (`OperatingSystem.IsMacOS()`), never `#if`.
+- `wfinfo-mac rewards` returns every line in its generous crop (squad names
+  too), with full-image boxes; the caller drops lines outside the name rows.
+- Vision drops lines in a wide crop that it reads in a narrow one (a wrapped
+  "BLUEPRINT" under one card). With a known UI scale, `rewards` therefore also
+  reads 7 narrow tiles over the strip (one per card position for 1-4 cards),
+  drops tile lines cut by a tile edge, and merges duplicates (longer text
+  wins). Keep this; `headless/macos/tests/rewards_regression.sh` guards it.
+- On macOS the default `--selfcheck` proves the Vision stack only, not
+  WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
 - On macOS `--selfcheck` never loads libgdiplus: the helper renders the sample
   with CoreText and reads it with Vision, so no `Bitmap`, `Graphics` or
   `Image` runs in .NET. Only the modes that run WFInfo's own System.Drawing
@@ -118,6 +129,8 @@ code type-checks without WPF/WinForms/Win32.
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
     Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+    Trimmed; blank counts as unset. On macOS a missing file is an error
+    (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
 - Environment for OCR data dirs derives from the OS XDG config dir when
   `WFINFO_DATA_DIR` is unset — do not assume Windows `%APPDATA%`. On macOS the
   app dir is `~/Library/Application Support/WFInfo`.
@@ -160,6 +173,9 @@ code type-checks without WPF/WinForms/Win32.
   path without a key press).
 
 ## Verification
+
+- macOS: `headless/macos/tests/rewards_regression.sh` (dev only) — every case
+  PASS: synthetic reward screens whose name lines `rewards` must all return.
 
 - `nix develop -c dotnet build headless/WFInfo.Headless.csproj` — clean build.
 - `nix develop -c dotnet run --project headless -- --selfcheck` — PASS expected.

@@ -127,6 +127,12 @@ namespace WFInfo.MacOS
             }
         }
 
+        /// <summary>
+        /// Makes <paramref name="link"/> a symlink to <paramref name="target"/>.
+        /// Two runners can do this at the same time: when the create fails
+        /// because the other one made the link first, a link to the same
+        /// target is accepted.
+        /// </summary>
         private static void Link(string link, string target)
         {
             var info = new FileInfo(link);
@@ -135,7 +141,14 @@ namespace WFInfo.MacOS
                 if (info.LinkTarget == target) return;
                 info.Delete();
             }
-            File.CreateSymbolicLink(link, target);
+            try
+            {
+                File.CreateSymbolicLink(link, target);
+            }
+            catch (IOException) when (new FileInfo(link).LinkTarget == target)
+            {
+                // Another runner created the same link between the check and the create.
+            }
         }
     }
 }

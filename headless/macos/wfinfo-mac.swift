@@ -240,6 +240,9 @@ func recognize(_ image: CGImage, request: RecognizeTextRequest, origin: CGPoint 
     }
 }
 
+/// Images `ocr` reads at the same time.
+let ocrConcurrency = 4
+
 func runOcr(_ raw: ArraySlice<String>) async throws {
     let args = try Arguments(raw, valueFlags: ["--lang", "--device"])
     // Each source is a file path, "-" (one image on stdin) or an in-memory frame.
@@ -259,40 +262,53 @@ func runOcr(_ raw: ArraySlice<String>) async throws {
     let device = try computeDevice(named: deviceChoice)
 
     let started = Date()
-    // One task per image: the requests run concurrently, results keep input order.
-    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
-        for (index, source) in sources.enumerated() {
-            group.addTask {
-                let begin = Date()
-                var entry: [String: Any] = [:]
-                do {
-                    let image: CGImage
-                    switch source {
-                    case .path(let path):
-                        entry["file"] = path
-                        image = try loadImage(path)
-                    case .frame(let number, let data):
-                        entry["frame"] = number
-                        image = try decodeImage(data, label: "frame \(number)")
-                    }
-                    let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
-                    let lines = try await recognize(image, request: request)
-                    entry["width"] = image.width
-                    entry["height"] = image.height
-                    entry["lines"] = lines
-                    entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
-                    entry["error"] = NSNull()
-                } catch {
-                    entry["lines"] = []
-                    entry["text"] = ""
-                    entry["error"] = "\(error)"
-                }
-                entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
-                return (index, entry)
+    // Reads one image; errors go into its entry, so one bad image does not stop the rest.
+    let readOne: @Sendable (Int) async -> (Int, [String: Any]) = { index in
+        let begin = Date()
+        var entry: [String: Any] = [:]
+        do {
+            let image: CGImage
+            switch sources[index] {
+            case .path(let path):
+                entry["file"] = path
+                image = try loadImage(path)
+            case .frame(let number, let data):
+                entry["frame"] = number
+                image = try decodeImage(data, label: "frame \(number)")
             }
+            let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
+            let lines = try await recognize(image, request: request)
+            entry["width"] = image.width
+            entry["height"] = image.height
+            entry["lines"] = lines
+            entry["text"] = lines.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            entry["error"] = NSNull()
+        } catch {
+            entry["lines"] = []
+            entry["text"] = ""
+            entry["error"] = "\(error)"
+        }
+        entry["ms"] = rounded(Date().timeIntervalSince(begin) * 1000, 10)
+        return (index, entry)
+    }
+    // At most ocrConcurrency images are decoded and in Vision at one time, so a
+    // large batch cannot use all memory. Results keep input order.
+    let results = await withTaskGroup(of: (Int, [String: Any]).self) { group -> [[String: Any]] in
+        var next = 0
+        while next < min(ocrConcurrency, sources.count) {
+            let index = next
+            group.addTask { await readOne(index) }
+            next += 1
         }
         var ordered = [[String: Any]](repeating: [:], count: sources.count)
-        for await (index, entry) in group { ordered[index] = entry }
+        for await (index, entry) in group {
+            ordered[index] = entry
+            if next < sources.count {
+                let index = next
+                group.addTask { await readOne(index) }
+                next += 1
+            }
+        }
         return ordered
     }
 
@@ -534,6 +550,67 @@ func savePNG(_ image: CGImage, to path: String) throws {
     guard FileManager.default.createFile(atPath: path, contents: png) else { throw Failure("cannot write \(path)") }
 }
 
+/// Narrow tiles over the reward strip: one per position a card centre can take
+/// with 1-4 cards (offsets 0, ±1/8, ±2/8, ±3/8 of the strip width from the
+/// screen centre, i.e. half-slot steps), each a little wider than one slot and
+/// as tall as the strip crop.
+func rewardTiles(crop: CGRect, imageWidth: Int, screenScaling s: Double, uiScale u: Double, rewardWidth w: Double) -> [CGRect] {
+    let slot = w / 4 * s * u
+    let tileWidth = slot + 30 * s * u
+    let centre = Double(imageWidth) / 2
+    return (-3...3).compactMap { k -> CGRect? in
+        let x = centre + Double(k) * slot / 2 - tileWidth / 2
+        let rect = CGRect(x: x.rounded(.down), y: crop.minY, width: tileWidth.rounded(.up), height: crop.height)
+            .intersection(crop)
+        return rect.isEmpty || rect.width < slot / 2 ? nil : rect
+    }
+}
+
+/// Lines from the strip plus the tiles. A tile line that touches the tile's
+/// left or right edge is cut, so it is dropped. Overlapping lines (the same
+/// text read twice) keep the longer text, then the higher confidence.
+func mergeTileLines(strip: [[String: Any]], tiles: [(CGRect, [[String: Any]])]) -> [[String: Any]] {
+    func box(_ line: [String: Any]) -> CGRect {
+        let b = line["box"] as? [String: Double] ?? [:]
+        return CGRect(x: b["x"] ?? 0, y: b["y"] ?? 0, width: b["width"] ?? 0, height: b["height"] ?? 0)
+    }
+    var candidates = strip
+    for (tile, found) in tiles {
+        let margin = 2.0
+        for line in found {
+            let r = box(line)
+            if r.minX <= tile.minX + margin || r.maxX >= tile.maxX - margin { continue }
+            candidates.append(line)
+        }
+    }
+    var kept: [[String: Any]] = []
+    for line in candidates {
+        let r = box(line)
+        let text = line["text"] as? String ?? ""
+        let confidence = line["confidence"] as? Double ?? 0
+        if let i = kept.firstIndex(where: { other in
+            let o = box(other)
+            let overlap = r.intersection(o)
+            let smaller = min(r.width * r.height, o.width * o.height)
+            return !overlap.isNull && smaller > 0 && overlap.width * overlap.height >= 0.5 * smaller
+        }) {
+            let otherText = kept[i]["text"] as? String ?? ""
+            let otherConfidence = kept[i]["confidence"] as? Double ?? 0
+            if text.count > otherText.count || (text.count == otherText.count && confidence > otherConfidence) {
+                kept[i] = line
+            }
+        } else {
+            kept.append(line)
+        }
+    }
+    // Same order as recognize: top to bottom (rows within half a line), then left to right.
+    return kept.sorted { p, q in
+        let a = box(p), b = box(q)
+        if abs(a.minY - b.minY) > min(a.height, b.height) / 2 { return a.minY < b.minY }
+        return a.minX < b.minX
+    }
+}
+
 func runRewards(_ raw: ArraySlice<String>) async throws {
     let args = try Arguments(raw, valueFlags: [
         "--display", "--window", "--file", "--reward-width", "--reward-height", "--reward-y", "--line-height",
@@ -587,7 +664,23 @@ func runRewards(_ raw: ArraySlice<String>) async throws {
     // The raw colour crop: no threshold, no colour filter.
     let strip = try cropImage(image, to: crop)
     let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
-    let lines = try await recognize(strip, request: request, origin: crop.origin)
+    // Vision drops lines in a wide strip that it reads in a narrow crop (a
+    // wrapped "BLUEPRINT" under one card, squad names). With a known UI scale,
+    // the strip is also read as narrow tiles, one per position a card can take.
+    let tiles = a == b ? rewardTiles(crop: crop, imageWidth: image.width, screenScaling: s, uiScale: a, rewardWidth: w) : []
+    let regions = [crop] + tiles
+    let results = try await withThrowingTaskGroup(of: (Int, [[String: Any]]).self) { group -> [[[String: Any]]] in
+        for (index, region) in regions.enumerated() {
+            group.addTask {
+                let part = index == 0 ? strip : try cropImage(image, to: region)
+                return (index, try await recognize(part, request: request, origin: region.origin))
+            }
+        }
+        var ordered = [[[String: Any]]](repeating: [], count: regions.count)
+        for try await (index, found) in group { ordered[index] = found }
+        return ordered
+    }
+    let lines = mergeTileLines(strip: results[0], tiles: Array(zip(tiles, results.dropFirst())))
     let ocrMs = Date().timeIntervalSince(ocrBegin) * 1000
 
     var saved: Any = NSNull()
@@ -910,7 +1003,7 @@ func runSynth(_ raw: ArraySlice<String>) throws {
         "height": height,
         "screenScaling": rounded(Double(s), 1_000_000),
         "uiScale": u,
-        "seed": Int(seed),
+        "seed": NSNumber(value: seed), // UInt64: Int(seed) traps above Int.max
         "nameRows": ["top": rounded(rowTop, 10), "bottom": rounded(rowTop + CGFloat(lineHeight) * k, 10)],
         "slots": slots,
     ])
@@ -949,6 +1042,17 @@ func parseHotkey(_ text: String) throws -> (UInt32, UInt32) {
     return (UInt32(key), modifiers)
 }
 
+/// The URL for log lines: scheme, host, port and path only. User, password,
+/// query and fragment can hold credentials, so they never reach the log.
+func redactedURL(_ url: URL) -> String {
+    guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return "<url>" }
+    parts.user = nil
+    parts.password = nil
+    parts.query = nil
+    parts.fragment = nil
+    return parts.string ?? "<url>"
+}
+
 final class HotkeyState {
     static var url = URL(string: "http://127.0.0.1:8000/scan/run")!
     static var quiet = false
@@ -974,7 +1078,7 @@ func triggerScan() {
     }
     HotkeyState.busy = true
     play("Tink")
-    log("hotkey: POST \(HotkeyState.url.absoluteString)")
+    log("hotkey: POST \(redactedURL(HotkeyState.url))")
     var request = URLRequest(url: HotkeyState.url, timeoutInterval: 200)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -1019,7 +1123,7 @@ func runHotkey(_ raw: ArraySlice<String>) throws -> Never {
     let status = RegisterEventHotKey(code, modifiers, id, GetApplicationEventTarget(), 0, &ref)
     guard status == noErr else { throw Failure("cannot register \(keyText) (\(status)); another app may own it") }
 
-    log("hotkey \(keyText) registered; press it to scan via \(HotkeyState.url.absoluteString). Ctrl-C stops.")
+    log("hotkey \(keyText) registered; press it to scan via \(redactedURL(HotkeyState.url)). Ctrl-C stops.")
     if HotkeyState.fireOnce { DispatchQueue.main.async { triggerScan() } }
     app.run()
     exit(0)
