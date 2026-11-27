@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "about": "WFInfo-ext error catalog. One file for the C# runner, the Swift helper, the Rust libraries and the dashboard. See errors/AGENTS.md for the rules.",
+  "areas": {
+    "SYS": "runtime, helpers and native libraries",
+    "CAP": "screen capture",
+    "OCR": "text recognition (Vision, Tesseract)",
+    "LAY": "reward layout (Rust library)",
+    "LOG": "game log and config (EE.log, EE.cfg)",
+    "NET": "network and prices (warframe.market)",
+    "DAT": "data files (market databases, scans folder)",
+    "SCN": "scan flow",
+    "SET": "WFInfo-ext settings file",
+    "DSH": "dashboard",
+    "PLG": "overlay plugin socket (reserved for the overlay client crate)",
+    "DST": "dataset tools (reserved for the dataset session)",
+    "GEN": "generated: an error that has no catalog entry"
+  },
+  "reserved": {
+    "PLG": "PLG-001 to PLG-099: the overlay client crate session adds these",
+    "DST": "DST-001 to DST-099: the dataset tools session adds these"
+  },
+  "generated": {
+    "prefix": "GEN",
+    "algorithm": "fnv1a32",
+    "input": "<exception type full name>|<site>",
+    "site": "Namespace.Type.Method of the innermost stack frame in WFInfo-ext code (no line numbers, so a rebuild keeps the code)",
+    "code": "GEN- followed by 6 lower-case hex digits of (hash >> 8) & 0xFFFFFF",
+    "name": "words[hash % 64]",
+    "words": [
+      "Otter", "Heron", "Lynx", "Badger", "Falcon", "Marten", "Puffin", "Walrus",
+      "Ibis", "Gecko", "Tapir", "Narwhal", "Pika", "Quokka", "Wombat", "Yak",
+      "Bison", "Crane", "Dingo", "Egret", "Ferret", "Gannet", "Hare", "Jackal",
+      "Kestrel", "Lemur", "Moose", "Newt", "Ocelot", "Plover", "Raven", "Stoat",
+      "Toucan", "Urchin", "Vole", "Wren", "Zebu", "Alpaca", "Beaver", "Cobra",
+      "Dormouse", "Eland", "Finch", "Gibbon", "Hornet", "Iguana", "Jay", "Koala",
+      "Lark", "Mantis", "Nightjar", "Oriole", "Pelican", "Quail", "Robin", "Shrike",
+      "Tern", "Viper", "Weasel", "Avocet", "Bittern", "Curlew", "Dunlin", "Eider"
+    ],
+    "testVectors": [
+      { "input": "System.InvalidOperationException|WFInfo.Scan.ScanRunner.RunAsync", "hash": "a121f239", "code": "GEN-a121f2", "name": "Viper" },
+      { "input": "System.IO.IOException|WFInfo.Scan.LogTail.ReadNewMatches", "hash": "e3a9703c", "code": "GEN-e3a970", "name": "Bittern" },
+      { "input": "", "hash": "811c9dc5", "code": "GEN-811c9d", "name": "Marten" }
+    ]
+  },
+  "errors": [
+    { "code": "SYS-001", "name": "Lantern", "area": "SYS", "severity": "error", "title": "Helper not built", "description": "The wfinfo-mac helper is not next to the runner, so macOS capture and Vision cannot run.", "action": "Build headless/WFInfo.Headless.csproj on macOS (it compiles the helper), or set WFINFO_MAC_HELPER to the helper's path." },
+    { "code": "SYS-002", "name": "Hourglass", "area": "SYS", "severity": "error", "title": "Helper timed out", "description": "The wfinfo-mac helper did not answer in time. The first Vision call after a new build can take 40-50 s.", "action": "Scan again. If it keeps timing out, run `wfinfo-mac selfcheck` in a terminal to see what blocks it." },
+    { "code": "SYS-003", "name": "Mirage", "area": "SYS", "severity": "error", "title": "Helper answer unreadable", "description": "The wfinfo-mac helper printed something that is not the expected JSON.", "action": "Rebuild headless so the helper and the runner match, then scan again." },
+    { "code": "SYS-004", "name": "Keystone", "area": "SYS", "severity": "error", "title": "Helper path is wrong", "description": "WFINFO_MAC_HELPER names a file that does not exist.", "action": "Fix the path in WFINFO_MAC_HELPER, or unset it to use the helper next to the runner." },
+    { "code": "SYS-005", "name": "Anvil", "area": "SYS", "severity": "error", "title": "Layout library missing", "description": "libwfinfo_layout (the Rust reward layout) is not next to the runner.", "action": "Build headless on macOS; it builds headless/macos/layout with cargo. Install Rust with `brew install rust` if cargo is missing." },
+    { "code": "SYS-006", "name": "Lodestone", "area": "SYS", "severity": "error", "title": "libgdiplus missing", "description": "This mode runs WFInfo's own System.Drawing pipeline, which needs libgdiplus on macOS.", "action": "`brew install mono-libgdiplus`. The normal scan and --selfcheck do not need it." },
+    { "code": "SYS-007", "name": "Inkwell", "area": "SYS", "severity": "error", "title": "Tesseract libraries missing", "description": "Tesseract was asked for, but its native libraries were not found.", "action": "Linux: run inside `nix develop`. macOS: `brew install tesseract`." },
+    { "code": "CAP-001", "name": "Shutter", "area": "CAP", "severity": "error", "title": "Screen Recording not allowed", "description": "macOS refused the screen capture: the app that started the scan has no Screen Recording permission.", "action": "System Settings > Privacy & Security > Screen & System Audio Recording: allow the app that runs the scan (the terminal, or the app that runs the dashboard), then restart that app." },
+    { "code": "CAP-002", "name": "Eclipse", "area": "CAP", "severity": "error", "title": "Display not connected", "description": "The chosen display is not connected any more.", "action": "Refresh the display list and choose again, or choose no display to capture every display." },
+    { "code": "CAP-003", "name": "Keyhole", "area": "CAP", "severity": "error", "title": "Window not on screen", "description": "The chosen window is closed or not on screen.", "action": "Bring Warframe on screen, refresh the window list and choose it again." },
+    { "code": "CAP-004", "name": "Prism", "area": "CAP", "severity": "error", "title": "Capture failed", "description": "The capture tool (grim on Linux, ScreenCaptureKit on macOS) did not produce an image.", "action": "Check that the capture tool works on its own (Linux: `grim test.png`), then scan again." },
+    { "code": "CAP-005", "name": "Smudge", "area": "CAP", "severity": "error", "title": "Screenshot unreadable", "description": "The screenshot file does not exist or is not an image.", "action": "Check the path given to --file and that the file is a PNG or JPEG." },
+    { "code": "CAP-006", "name": "Compass", "area": "CAP", "severity": "error", "title": "Region capture is Linux-only", "description": "--region uses compositor layout coordinates, which macOS does not have.", "action": "On macOS use --window <id> or --output <display id> (see `wfinfo-mac windows` and `displays`)." },
+    { "code": "OCR-001", "name": "Fog", "area": "OCR", "severity": "error", "title": "Text recognition failed", "description": "Apple Vision could not read the reward area.", "action": "Scan again. If it repeats, run `wfinfo-mac selfcheck` to check Vision on this Mac." },
+    { "code": "OCR-002", "name": "Smoke", "area": "OCR", "severity": "error", "title": "Tesseract did not start", "description": "The Tesseract engine could not be created (libraries or tessdata missing).", "action": "Run --selfcheck --ocr tesseract to see the cause; see SYS-007." },
+    { "code": "LAY-001", "name": "Tangle", "area": "LAY", "severity": "error", "title": "Layout input invalid", "description": "The reward layout got no helper answer, or one without the fields it needs.", "action": "Rebuild headless so the helper and the layout library match, then scan again." },
+    { "code": "LAY-002", "name": "Knot", "area": "LAY", "severity": "error", "title": "Layout failed", "description": "The reward layout library returned an error.", "action": "Scan again. If it repeats, the crash report in crash-reports/ has the details." },
+    { "code": "LOG-001", "name": "Driftwood", "area": "LOG", "severity": "error", "title": "EE.log not found", "description": "Warframe's EE.log was not found, so the automatic scan cannot start.", "action": "Start Warframe once so it writes EE.log, or pass --log <path> (or set WFINFO_EE_LOG)." },
+    { "code": "LOG-002", "name": "Ripple", "area": "LOG", "severity": "warning", "title": "Log events stopped", "description": "The file watcher on EE.log failed (for example the Linux inotify limit), so the watch checks the log every 250 ms instead.", "action": "Nothing is needed; the watch retries file events every 10 s. On Linux, raise fs.inotify.max_user_watches if it repeats." },
+    { "code": "LOG-003", "name": "Dial", "area": "LOG", "severity": "warning", "title": "UI scale unknown", "description": "EE.cfg was not found or its UI scale did not parse, so the scan estimates the UI scale from the text.", "action": "Nothing is needed. To fix the scale, pass --ui-scale (0.5-1.25)." },
+    { "code": "NET-001", "name": "Squall", "area": "NET", "severity": "warning", "title": "Price fetch failed", "description": "warframe.market did not answer, so some prices come from the local sheet or are missing.", "action": "Check the network. The next scan fetches again; failed fetches are not cached." },
+    { "code": "NET-002", "name": "Static", "area": "NET", "severity": "warning", "title": "Unexpected price answer", "description": "warframe.market answered with data the scanner cannot read.", "action": "Nothing is needed now; if it repeats, warframe.market may have changed its API." },
+    { "code": "DAT-001", "name": "Quarry", "area": "DAT", "severity": "error", "title": "Item list missing", "description": "market_items.json is missing or unreadable, so part names cannot be matched.", "action": "Run the OCR suite once (`--test tests/map.json out.json`) or the Windows app, so the databases are downloaded." },
+    { "code": "DAT-002", "name": "Ledger", "area": "DAT", "severity": "warning", "title": "Price sheet missing", "description": "market_data.json is missing or unreadable, so there is no offline price fallback.", "action": "Run the OCR suite once so the databases are downloaded." },
+    { "code": "DAT-003", "name": "Glossary", "area": "DAT", "severity": "error", "title": "Name table missing", "description": "name_data.json is missing or unreadable, so recognised names cannot be translated to market names.", "action": "Run the OCR suite once so the databases are downloaded." },
+    { "code": "DAT-004", "name": "Bastion", "area": "DAT", "severity": "error", "title": "Scans folder not writable", "description": "The scanner cannot create or write its scans folder in the app data directory.", "action": "Check the permissions of the WFInfo app data folder." },
+    { "code": "SCN-001", "name": "Hollow", "area": "SCN", "severity": "info", "title": "No reward screen found", "description": "The capture worked, but no reward name was recognised.", "action": "Open the fissure reward screen and scan again." },
+    { "code": "SCN-002", "name": "Turnstile", "area": "SCN", "severity": "warning", "title": "Scan already running", "description": "Another scan is running, so this request did not start a second one.", "action": "Wait for the running scan to finish." },
+    { "code": "SCN-003", "name": "Sundial", "area": "SCN", "severity": "error", "title": "Scan timed out", "description": "The scan did not finish within its deadline and was stopped.", "action": "Scan again. The first scan after a new build can be slow (see SYS-002)." },
+    { "code": "SET-001", "name": "Scroll", "area": "SET", "severity": "warning", "title": "Settings unreadable", "description": "The WFInfo-ext settings file could not be read, so the defaults (all switches off) are used.", "action": "Change a setting on the dashboard to write a new file, or delete the broken file." },
+    { "code": "SET-002", "name": "Seal", "area": "SET", "severity": "error", "title": "Settings not saved", "description": "The dashboard could not write the WFInfo-ext settings file.", "action": "Check the permissions of the WFInfo app data folder." },
+    { "code": "DSH-001", "name": "Beacon", "area": "DSH", "severity": "error", "title": "Scan command did not start", "description": "The dashboard could not start the scan command.", "action": "Check WFINFO_SCAN_CMD, or that dotnet (macOS) or nix (Linux) is on PATH." }
+  ]
+}
