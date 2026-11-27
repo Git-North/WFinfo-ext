@@ -64,6 +64,12 @@ code type-checks without WPF/WinForms/Win32.
   only (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target
   `PublishMacHelper` copies it into the `dotnet publish` folder, also on
   macOS only.
+  The helper MUST build with
+  the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
+  SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
+  Today that is only compute-device pinning
+  (`RecognizeTextRequest.supportedComputeStageDevices`/`setComputeDevice`);
+  everything else the helper uses is macOS 14/15 API.
 - On macOS a scan writes NO temporary files: `wfinfo-mac rewards` captures
   and reads in memory and writes the capture only into `scans/` (`--save`).
   Every helper call gets its own path, `scans/capture-<pid>-<n>.png` (process
@@ -162,6 +168,7 @@ code type-checks without WPF/WinForms/Win32.
     `XDG_CONFIG_HOME` there.
   - `WFINFO_OCR_ENGINE` — default `--ocr` (auto, vision, tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
+    Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
     Trimmed; blank counts as unset. On macOS a missing file is an error
     (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
