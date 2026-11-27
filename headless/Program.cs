@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Tesseract;
+using WFInfo.Errors;
 using WFInfo.MacOS;
 using WFInfo.Scan;
 using WFInfo.Services.HDRDetection;
@@ -52,10 +53,32 @@ namespace WFInfo
         private const int ExitSomeFailed = 1;
         private const int ExitFatal = 2;
 
+        /// <summary>
+        /// Top-level guard: any exception that escapes a mode writes a crash
+        /// report and prints "ERROR &lt;code&gt; &lt;name&gt;: … (crash report: …)", exit 2.
+        /// </summary>
         public static async Task<int> Main(string[] args)
+        {
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                ErrorConsole.Fail(e.ExceptionObject as Exception ?? new InvalidOperationException("unhandled non-exception object"), "runner", true);
+            try
+            {
+                return await RunMode(args).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                return ErrorConsole.Fail(ex, "runner", true);
+            }
+        }
+
+        private static async Task<int> RunMode(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             ConfigureEnvironment();
+
+            // Developer hook: proves the guard and the crash report end to end.
+            if (Environment.GetEnvironmentVariable("WFINFO_FAULT") == "crash")
+                throw new InvalidOperationException("forced failure (WFINFO_FAULT=crash)");
 
             string[] clean = args ?? Array.Empty<string>();
             if (clean.Length == 0)
@@ -199,8 +222,8 @@ namespace WFInfo
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"Test execution failed: {ex}");
-                return ExitFatal;
+                Console.Error.WriteLine("Test execution failed.");
+                return ErrorConsole.Fail(ex, "ocr-suite");
             }
         }
 
@@ -228,6 +251,10 @@ namespace WFInfo
                 PrintScanUsage();
                 return ExitFatal;
             }
+            catch (ScanFailure ex)
+            {
+                return ErrorConsole.Fail(ex, "scan");
+            }
 
             if (options.Help)
             {
@@ -253,9 +280,9 @@ namespace WFInfo
 
                 var data = new Data(ApplicationSettings.GlobalReadonlySettings, processFinder, windowService)
                 {
-                    marketItems = LoadLocalJson(ScanPaths.MarketItems, "market_items.json"),
-                    marketData = LoadLocalJson(ScanPaths.MarketData, "market_data.json"),
-                    nameData = LoadLocalJson(ScanPaths.NameData, "name_data.json"),
+                    marketItems = LoadLocalJson(ScanPaths.MarketItems, "DAT-001"),
+                    marketData = LoadLocalJson(ScanPaths.MarketData, "DAT-002"),
+                    nameData = LoadLocalJson(ScanPaths.NameData, "DAT-003"),
                 };
                 WFInfoMain.dataBase = data;
 
@@ -303,8 +330,7 @@ namespace WFInfo
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"Scan failed: {ex}");
-                return ExitFatal;
+                return ErrorConsole.Fail(ex, "scan");
             }
         }
 
@@ -320,15 +346,14 @@ namespace WFInfo
             string logPath = EeLog.Resolve(options.LogPath);
             if (logPath == null)
             {
-                Console.Error.WriteLine(
+                ErrorConsole.Print("LOG-001",
                     options.LogPath != null
-                        ? $"ERROR: no such log file: {Path.GetFullPath(options.LogPath)}"
-                        : "ERROR: Warframe's EE.log was not found. Start the game once, "
-                          + "or pass --log <path>. Looked in:");
+                        ? $"no such log file: {Path.GetFullPath(options.LogPath)}"
+                        : "looked in:");
                 if (options.LogPath == null)
                 {
                     foreach (string candidate in EeLog.CandidatePaths())
-                        Console.Error.WriteLine("  " + candidate);
+                        Console.Error.WriteLine("  " + Redact.Path(candidate));
                 }
                 return ExitFatal;
             }
@@ -364,24 +389,37 @@ namespace WFInfo
             }
         }
 
-        /// <summary>Reads one of WFInfo's cached database files; empty on failure.</summary>
-        private static JObject LoadLocalJson(string path, string label)
+        /// <summary>
+        /// Reads one of WFInfo's cached database files. A missing or unreadable
+        /// file is its catalog code (DAT-001/002/003): an error-severity code
+        /// stops the scan (ScanFailure); a warning is printed and gives an
+        /// empty object.
+        /// </summary>
+        private static JObject LoadLocalJson(string path, string code)
         {
+            string problem = null;
+            Exception cause = null;
             if (!File.Exists(path))
             {
-                Console.Error.WriteLine($"WARNING: {label} missing at {path}; run the app or the OCR suite once to cache it.");
-                return new JObject();
+                problem = $"{Path.GetFileName(path)} missing at {path}";
+            }
+            else
+            {
+                try
+                {
+                    return JObject.Parse(File.ReadAllText(path));
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is JsonException)
+                {
+                    problem = $"cannot read {Path.GetFileName(path)}: {ex.Message}";
+                    cause = ex;
+                }
             }
 
-            try
-            {
-                return JObject.Parse(File.ReadAllText(path));
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"WARNING: cannot parse {label}: {ex.Message}");
-                return new JObject();
-            }
+            if (ErrorCatalog.Get(code)?.Severity == "error")
+                throw new ScanFailure(code, Redact.Text(problem), cause);
+            ErrorConsole.Print(code, problem);
+            return new JObject();
         }
 
         private static void PrintScanUsage()
@@ -503,6 +541,10 @@ namespace WFInfo
                 Console.Error.WriteLine("ERROR: " + ex.Message);
                 return ExitFatal;
             }
+            catch (ScanFailure ex)
+            {
+                return ErrorConsole.Fail(ex, "selfcheck");
+            }
 
             Console.WriteLine("OCR engine: " + engineName);
             string debugOut = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WFInfo", "selfcheck.png");
@@ -523,8 +565,8 @@ namespace WFInfo
                 }
                 catch (InvalidOperationException ex)
                 {
-                    Console.Error.WriteLine("Self-check failed: " + ex.Message);
-                    return ExitFatal;
+                    Console.Error.WriteLine("Self-check failed.");
+                    return ErrorConsole.Fail(ex, "selfcheck");
                 }
             }
 
@@ -571,8 +613,8 @@ namespace WFInfo
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"Self-check failed: {ex}");
-                return ExitFatal;
+                Console.Error.WriteLine("Self-check failed.");
+                return ErrorConsole.Fail(ex, "selfcheck");
             }
         }
 
