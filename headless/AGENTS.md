@@ -99,6 +99,11 @@ code type-checks without WPF/WinForms/Win32.
   `Platform/`.
 - `wfinfo-mac rewards` returns every line in its generous crop (squad names
   too), with full-image boxes; the caller drops lines outside the name rows.
+- Vision drops lines in a wide crop that it reads in a narrow one (a wrapped
+  "BLUEPRINT" under one card). With a known UI scale, `rewards` therefore also
+  reads 7 narrow tiles over the strip (one per card position for 1-4 cards),
+  drops tile lines cut by a tile edge, and merges duplicates (longer text
+  wins). Keep this; `headless/macos/tests/rewards_regression.sh` guards it.
 - On macOS the default `--selfcheck` proves the Vision stack only, not
   WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
   The scan shells out to `grim` (capture), `wlr-randr` (output list) and
@@ -210,6 +215,9 @@ code type-checks without WPF/WinForms/Win32.
   not real game rendering.
 
 ## Verification
+
+- macOS: `headless/macos/tests/rewards_regression.sh` (dev only) — every case
+  PASS: synthetic reward screens whose name lines `rewards` must all return.
 
 - `nix develop -c dotnet build headless/WFInfo.Headless.csproj` — clean build.
 - `nix develop -c dotnet run --project headless -- --selfcheck` — PASS expected.
