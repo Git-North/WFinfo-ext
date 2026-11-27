@@ -12,6 +12,9 @@
  *   form posts to /scan/run with the chosen display or window; the script
  *   keeps the button busy until the scan answers and then refreshes the body.
  *   "Refresh lists" re-reads the host's displays and windows.
+ * - Scan settings: each switch change posts the form to /settings with fetch
+ *   (no reload) and the "Save settings" button is hidden. Without the script
+ *   the button posts the form and the server redirects back to /scan.
  *
  * Polling pauses while the tab is hidden; an event stream stays open. All
  * dynamic text is escaped.
@@ -524,6 +527,88 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Scan settings (the /scan page's switches)                           */
+  /* ------------------------------------------------------------------ */
+
+  function setSettingsStatus(text, isError) {
+    var status = $("wf-settings-status");
+    if (!status) return;
+    status.hidden = text.length === 0;
+    status.className = isError
+      ? "govuk-body-s wf-err"
+      : "govuk-body-s wf-muted";
+    status.textContent = text;
+  }
+
+  function settingsBoxes(form) {
+    return form.querySelectorAll("input[type=checkbox]");
+  }
+
+  function applySettings(form, settings) {
+    var boxes = settingsBoxes(form);
+    for (var i = 0; i < boxes.length; i++) {
+      if (typeof settings[boxes[i].name] === "boolean") {
+        boxes[i].checked = settings[boxes[i].name];
+      }
+    }
+  }
+
+  function saveSettings(form, changed) {
+    var boxes = settingsBoxes(form);
+    var i;
+    for (i = 0; i < boxes.length; i++) boxes[i].disabled = true;
+    setSettingsStatus("Saving…", false);
+    // The form body carries every switch, exactly like the plain form post.
+    var body = new URLSearchParams();
+    for (i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) body.set(boxes[i].name, "on");
+    }
+
+    fetch(form.action, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: body,
+    }).then(function (resp) {
+      return resp.json().catch(function () {
+        return {};
+      }).then(function (data) {
+        if (resp.ok && data.ok) {
+          applySettings(form, data.settings || {});
+          setSettingsStatus(data.message || "Saved.", false);
+          return;
+        }
+        if (changed) changed.checked = !changed.checked;
+        setSettingsStatus(
+          data.error || "The settings were not saved (HTTP " + resp.status +
+              ").",
+          true,
+        );
+      });
+    }).catch(function (err) {
+      if (changed) changed.checked = !changed.checked;
+      setSettingsStatus("The settings were not saved: " + err.message, true);
+    }).finally(function () {
+      for (var j = 0; j < boxes.length; j++) boxes[j].disabled = false;
+    });
+  }
+
+  function initSettings() {
+    var form = $("wf-settings-form");
+    if (!form || !window.fetch || !window.URLSearchParams) return;
+    var save = $("wf-settings-save");
+    if (save) save.hidden = true;
+    form.addEventListener("change", function (event) {
+      if (event.target && event.target.type === "checkbox") {
+        saveSettings(form, event.target);
+      }
+    });
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveSettings(form, null);
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
 
   function init() {
     if (window.GOVUKFrontend && GOVUKFrontend.initAll) {
@@ -534,6 +619,7 @@
     initScan();
     initScanForm();
     initScanTargets();
+    initSettings();
   }
 
   if (document.readyState === "loading") {

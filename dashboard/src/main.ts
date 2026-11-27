@@ -6,6 +6,7 @@
  *   /recent     — reward screens from debug.log + OCR test-suite results
  *   /scan       — newest OCR reward-screen scan and which part to take
  *   POST /scan/run — start a scan and answer with the outcome
+ *   POST /settings — change a WFInfo-ext switch (wfinfo-ext-settings.json)
  *   /wfmarket   — cached prime-part prices, with live 90-day statistics per item
  *
  * Environment:
@@ -21,8 +22,9 @@
  *                        <checkout>#scan -- --no-notify; on macOS dotnet runs
  *                        the headless runner, prebuilt DLL else dotnet run)
  *   WFINFO_SCAN_ROOT     checkout the default command builds the runner from
- *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests from another host
- *                        and to show it the display and window lists
+ *   WFINFO_SCAN_REMOTE   set to 1 to accept scan requests and settings
+ *                        changes from another host, and to show it the
+ *                        display and window lists
  *   WFINFO_MAC_HELPER    macOS: wfinfo-mac path for the display/window lists
  *                        (default <checkout>/headless/bin/Debug/net9.0/wfinfo-mac)
  *
@@ -69,6 +71,7 @@ import {
 import { parseScanResult, resolveBest, type ScanResult } from "./lib/scan.ts";
 import { Scanner } from "./lib/scanner.ts";
 import { defaultScanCommand, macHelperPath } from "./lib/platform.ts";
+import { apiSettings, readSettings, settingsRoute } from "./lib/settings.ts";
 import {
   denoRunner,
   discoverTargets,
@@ -735,6 +738,14 @@ async function handler(
 
   try {
     if (path === "/scan/run") return await scanRun(req, info);
+    if (path === "/settings") {
+      return await settingsRoute(req, {
+        appDir: APP_DIR,
+        remoteAddr: info?.remoteAddr,
+        allowRemote: SCAN_REMOTE,
+        errorPage: errorPageHtml,
+      });
+    }
 
     if (req.method !== "GET") {
       return new Response("method not allowed", { status: 405 });
@@ -748,7 +759,11 @@ async function handler(
 
     if (path === "/scan") {
       return html(
-        scanPageHtml(scanState(), toOptions(await clientTargets(info))),
+        scanPageHtml(
+          scanState(),
+          toOptions(await clientTargets(info)),
+          await readSettings(APP_DIR),
+        ),
       );
     }
 
@@ -789,6 +804,7 @@ async function handler(
     if (path === "/api/ocr-runs") return apiOcrRuns();
     if (path === "/api/scan") return apiScan();
     if (path === "/api/scan/targets") return await apiScanTargets(url, info);
+    if (path === "/api/settings") return await apiSettings(APP_DIR);
 
     if (path.startsWith("/govuk/")) {
       const asset = await govukAsset(path);

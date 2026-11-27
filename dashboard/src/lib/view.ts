@@ -11,6 +11,11 @@ import { wfmItemUrl } from "./items.ts";
 import type { LiveStats } from "./wfm.ts";
 import { priceChartSvg } from "./charts.ts";
 import type { ScanTargetOptions, TargetOption } from "./targets.ts";
+import {
+  DEFAULT_SETTINGS,
+  SETTINGS_FILE,
+  type SettingsRead,
+} from "./settings.ts";
 
 export type NavKey = "logs" | "recent" | "scan" | "wfmarket";
 
@@ -541,6 +546,11 @@ ${noChoices}`;
 export function scanPageHtml(
   state: ScanPageState,
   targets: ScanTargetOptions,
+  settings: SettingsRead = {
+    settings: { ...DEFAULT_SETTINGS },
+    warning: null,
+    detail: null,
+  },
 ): string {
   const targetOptions = (options: TargetOption[], fallback: string): string =>
     [`<option value="">${escapeHtml(fallback)}</option>`]
@@ -596,6 +606,7 @@ ${notes}
   Warframe reward screen visible on the captured monitor. A scan takes a few
   seconds.</p>
 </form>
+${settingsFormHtml(settings)}
 <p id="wf-scan-status" class="govuk-body wf-muted" role="status" aria-live="polite" hidden></p>
 <pre id="wf-scan-log" class="wf-scan-log" hidden></pre>
 <div id="wf-scan-body">
@@ -606,6 +617,77 @@ ${scanBodyHtml(state)}
   } ·
 refreshes automatically while visible.</p>`;
   return shell("Scan", "scan", content);
+}
+
+/**
+ * The WFInfo-ext switches (wfinfo-ext-settings.json). A plain form post sets
+ * both switches and returns to /scan; dashboard.js saves each change with
+ * fetch instead and hides the button.
+ */
+export function settingsFormHtml(read: SettingsRead): string {
+  const box = (
+    key: "notifications" | "overlayPin",
+    label: string,
+    hint: string,
+  ): string => {
+    const id = `wf-setting-${key}`;
+    return `      <div class="govuk-checkboxes__item">
+        <input class="govuk-checkboxes__input" id="${id}" name="${key}" type="checkbox" value="on"${
+      read.settings[key] ? " checked" : ""
+    } aria-describedby="${id}-hint">
+        <label class="govuk-label govuk-checkboxes__label" for="${id}">${
+      escapeHtml(label)
+    }</label>
+        <div id="${id}-hint" class="govuk-hint govuk-checkboxes__hint">${
+      escapeHtml(hint)
+    }</div>
+      </div>`;
+  };
+
+  const warning = read.warning === null ? "" : `<div class="govuk-warning-text">
+    <span class="govuk-warning-text__icon" aria-hidden="true">!</span>
+    <strong class="govuk-warning-text__text">
+      <span class="govuk-visually-hidden">Warning</span>
+      ${
+    escapeHtml(read.warning)
+  } Scroll: the settings file could not be used (${
+    escapeHtml(read.detail ?? "unknown reason")
+  }), so every switch is off. Save to write a new file.
+    </strong>
+  </div>`;
+
+  return `<form id="wf-settings-form" class="wf-settings-form govuk-!-margin-top-6" method="post" action="/settings">
+  <div class="govuk-form-group">
+    <fieldset class="govuk-fieldset" aria-describedby="wf-settings-hint">
+      <legend class="govuk-fieldset__legend govuk-fieldset__legend--m">
+        <h2 class="govuk-fieldset__heading">Scan settings</h2>
+      </legend>
+      <div id="wf-settings-hint" class="govuk-hint">Saved on this machine in
+      <code class="wf-code">${escapeHtml(SETTINGS_FILE)}</code>. Both are off
+      by default. The scanner reads them at each scan, so a change applies to
+      the next scan.</div>
+  ${warning}
+      <div class="govuk-checkboxes govuk-checkboxes--small" data-module="govuk-checkboxes">
+${
+    box(
+      "notifications",
+      "Notify on automatic scans",
+      "Show a desktop notification when the EE.log watcher scans a reward screen. Scans from this page and the hotkey never notify.",
+    )
+  }
+${
+    box(
+      "overlayPin",
+      "Pin the overlay after a scan",
+      "Keep the overlay on screen after a scan that found part names.",
+    )
+  }
+      </div>
+    </fieldset>
+  </div>
+  <button id="wf-settings-save" class="govuk-button govuk-button--secondary" data-module="govuk-button" type="submit">Save settings</button>
+  <p id="wf-settings-status" class="govuk-body-s wf-muted" role="status" aria-live="polite" hidden></p>
+</form>`;
 }
 
 /* ------------------------------------------------------------------ */
