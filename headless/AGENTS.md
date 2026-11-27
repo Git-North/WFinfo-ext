@@ -175,6 +175,11 @@ code type-checks without WPF/WinForms/Win32.
   `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
   appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
   and SIP strips `DYLD_*` there).
+- `scans/last.png` and `scans/latest.json` are one pair: write both under
+  per-process temporary names in `scans/` (`last.png.<pid>.tmp`,
+  `latest.json.<pid>.tmp`), then rename the screenshot and the record last.
+  Never write either file in place. Stale `.tmp` files (owner process gone,
+  or older than 10 minutes) are deleted at the next scan start.
 - The scan writes only `<app dir>/scans/` (records + `last.png`) and
   `<app dir>/price_cache.json`. It never writes the Windows-side files and never
   touches the ocr_runs history.
