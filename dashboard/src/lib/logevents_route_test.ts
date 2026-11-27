@@ -41,7 +41,7 @@ Deno.test("GET /api/logs/events: debug.log and ocr_runs changes reach the client
     );
     const sse = streamText(resp.body!);
     await sse.until("event: ready");
-    assertStringIncludes(sse.text, '"sources":["debug.log","ocr_runs"]');
+    assertStringIncludes(sse.text, '"sources":["debug.log","ocr_runs","scan"]');
 
     await Deno.writeTextFile(
       `${appDir}/debug.log`,

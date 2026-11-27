@@ -324,6 +324,22 @@ export interface LogSourceSpec {
 }
 
 /**
+ * The sources of /api/logs/events for one app dir: `debug.log` (file),
+ * `ocr_runs` (directory) and `scan` (`scans/latest.json`, which the runner
+ * replaces by a rename at each publish: the fast and the deep record of a
+ * watch scan are two changes). Stat stamps only, never the file text.
+ */
+export function dashboardSources(
+  appDir: string,
+): Record<string, LogSourceSpec> {
+  return {
+    "debug.log": { path: `${appDir}/debug.log`, kind: "file" },
+    ocr_runs: { path: `${appDir}/ocr_runs`, kind: "dir" },
+    scan: { path: `${appDir}/scans/latest.json`, kind: "file" },
+  };
+}
+
+/**
  * GET /api/logs/events — server-sent events. Opens with `retry` and an
  * `event: ready` (the sources and whether each one has a filesystem watcher),
  * then one `event: change` with `{"source": name}` per change, and a comment

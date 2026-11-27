@@ -7,8 +7,10 @@
  *   /api/ocr-runs on an ocr_runs change, and re-render the two card lists.
  * - Fallback: without EventSource, or after 3 stream errors in a row, the
  *   Logs page polls every 3s and the Recently seen page every 10s.
- * - Scan page: re-fetch /api/scan every 3s and swap in the re-rendered body,
- *   so a hotkey-triggered scan appears without a reload. The page's "Scan now"
+ * - Scan page: re-fetch /api/scan on each "change" event for the scan
+ *   source (scans/latest.json; a watch scan publishes a fast and a deep
+ *   record) and swap in the re-rendered body, so every scan appears without a
+ *   reload. Fallback: re-fetch every 3s. The page's "Scan now"
  *   form posts to /scan/run with the chosen display or window; the script
  *   keeps the button busy until the scan answers and then refreshes the body.
  *   "Refresh lists" re-reads the host's displays and windows.
@@ -367,22 +369,32 @@
   /* ------------------------------------------------------------------ */
 
   var scanTimer = null;
+  var scanLive = false;
+
+  function fetchScan() {
+    var bodyEl = $("wf-scan-body");
+    if (!bodyEl) return Promise.resolve();
+    return fetchJson("/api/scan").then(function (data) {
+      // The server renders the same markup the page was built with, so the
+      // empty-state inset toggling happens on the server side.
+      if (data && data.body) bodyEl.innerHTML = data.body;
+    });
+  }
 
   function scheduleScanPoll(delayMs) {
+    if (scanLive) {
+      // Live events drive the page; a forced refresh (after "Scan now").
+      if (delayMs === 0) fetchScan().catch(function () {});
+      return;
+    }
     clearTimeout(scanTimer);
     scanTimer = setTimeout(pollScan, delayMs);
   }
   function pollScan() {
-    var bodyEl = $("wf-scan-body");
-    if (!bodyEl) return;
-    fetchJson("/api/scan").then(function (data) {
-      if (data && data.body) {
-        // The server renders the same markup the page was built with, so the
-        // empty-state inset toggling happens on the server side.
-        bodyEl.innerHTML = data.body;
-      }
+    if (!$("wf-scan-body")) return;
+    fetchScan().then(function () {
       scheduleScanPoll(3000);
-    }).catch(function () {
+    }, function () {
       scheduleScanPoll(5000);
     });
   }
@@ -390,13 +402,18 @@
   function initScan() {
     if (!$("wf-scan-body")) return;
     document.addEventListener("visibilitychange", function () {
+      if (scanLive) return;
       if (scanTimer) {
         clearTimeout(scanTimer);
         scanTimer = null;
       }
       if (!document.hidden) scheduleScanPoll(500);
     });
-    scheduleScanPoll(3000);
+    scanLive = true;
+    watchLogEvents(["scan"], serial(fetchScan), function () {
+      scanLive = false;
+      scheduleScanPoll(3000);
+    });
   }
 
   /* ------------------------------------------------------------------ */

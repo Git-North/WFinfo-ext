@@ -85,6 +85,13 @@ namespace WFInfo.Scan
         /// </summary>
         public bool Once { get; private set; }
 
+        /// <summary>
+        /// macOS Vision scan: run the automatic scan's two passes (fast, then
+        /// deep on the same capture) for a manual scan too. `--watch` always
+        /// does. Works with `--file`, so the flow can be tested without a game.
+        /// </summary>
+        public bool TwoPass { get; private set; }
+
         /// <summary>Explicit EE.log path; null auto-detects the Proton prefix.</summary>
         public string LogPath { get; private set; }
 
@@ -164,6 +171,9 @@ namespace WFInfo.Scan
                         break;
                     case "--once":
                         options.Once = true;
+                        break;
+                    case "--two-pass":
+                        options.TwoPass = true;
                         break;
                     case "--ui-scale":
                         string scale = RequireValue(args, ref i, arg).Trim().ToLowerInvariant();

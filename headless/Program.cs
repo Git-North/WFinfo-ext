@@ -379,7 +379,7 @@ namespace WFInfo
 
             try
             {
-                var watcher = new ScanWatcher(logPath, options, runner.RunAsync, Console.Out);
+                var watcher = new ScanWatcher(logPath, options, runner.RunWatchAsync, Console.Out);
                 return await watcher.RunAsync(cancellation.Token).ConfigureAwait(false);
             }
             finally
@@ -440,6 +440,7 @@ namespace WFInfo
             Console.WriteLine("  --ttl <hours>     price-cache lifetime in hours (default 6)");
             Console.WriteLine("  --no-notify       do not post the desktop notification");
             Console.WriteLine("  --json            print the scan record to stdout");
+            Console.WriteLine("  --two-pass        macOS: fast pass, then deep pass on the same capture (as --watch does)");
             Console.WriteLine();
             Console.WriteLine("Watch mode (scan automatically when the game shows a reward screen):");
             Console.WriteLine("  --watch           tail Warframe's EE.log and scan on every reward screen");
