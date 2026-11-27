@@ -206,6 +206,9 @@ namespace WFInfo.Scan
             if (options.Once) options.Watch = true;
             if (options.Watch && options.File != null)
                 throw new ArgumentException("--watch reads the live screen; --file cannot be combined with it");
+            // macOS captures a window by id, not by a layout region (ScreenCaptureKit).
+            if (OperatingSystem.IsMacOS() && options.Region != null)
+                throw new ArgumentException("--region is Linux-only; on macOS use --window <id> or --output <display id>");
 
             return options;
         }

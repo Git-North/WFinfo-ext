@@ -37,6 +37,8 @@ code type-checks without WPF/WinForms/Win32.
   the compositor's own client geometry, so no conversion is needed. On macOS,
   `--window <id>` (a CGWindowID) captures one window, `--output <id>` (a
   CGDirectDisplayID) one display, else every display, main display first.
+  macOS refuses `--region` at option parse (exit 2): it is a Linux layout
+  region, and a display capture in its place is the wrong target.
 - `--watch` scans automatically: `ScanWatcher` tails EE.log and runs a scan per
   "Got rewards" line. The game writes that line before the panel is on screen,
   so a triggered scan re-captures until a part is recognised (or `--wait`

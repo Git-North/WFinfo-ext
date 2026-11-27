@@ -138,7 +138,7 @@ nix run .#scan -- --json           # print the record to stdout
 |---|---|
 | `--file <png>` | OCR this screenshot instead of capturing the screen |
 | `--output <name>` | grim output (monitor) to capture; default tries each output, then the joined image |
-| `--region "X,Y WxH"` | capture one layout region — a window's frame, in the same coordinates the compositor reports for its clients |
+| `--region "X,Y WxH"` | Linux: capture one layout region — a window's frame, in the same coordinates the compositor reports for its clients. macOS refuses it (exit 2); use `--window` |
 | `--window <id>` | macOS: capture one window by its id (`wfinfo-mac windows`); `--output <id>` takes a display id there |
 | `--ocr <engine>` | `auto` (default: Vision on macOS), `vision` or `tesseract` |
 | `--ui-scale <s>` | macOS Vision scan: `auto` (EE.cfg, default), `unknown` (estimate from the text) or a fixed 0.5–1.25 |
