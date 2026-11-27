@@ -1,0 +1,13 @@
+{
+  "tasks": {
+    "test": "deno run -A run.ts",
+    "coverage": "deno run -A run.ts --coverage"
+  },
+  "fmt": {
+    "exclude": ["**/*.md", "data", "map.json", "headless"]
+  },
+  "lint": {
+    "exclude": ["data", "headless"]
+  },
+  "exclude": ["**/bin", "**/obj"]
+}

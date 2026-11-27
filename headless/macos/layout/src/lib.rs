@@ -174,6 +174,3 @@ pub unsafe extern "C" fn wfinfo_layout_free(text: *mut c_char) {
         drop(unsafe { CString::from_raw(text) });
     }
 }
-
-#[cfg(test)]
-mod tests;

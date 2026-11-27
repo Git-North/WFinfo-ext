@@ -5,8 +5,10 @@
 //! row top; squad names 14 tall, 4 below the row bottom; "1 OWNED" 14 tall,
 //! 60 above the row top.
 
-use super::*;
-use std::ffi::CString;
+use serde_json::{Value, json};
+use std::ffi::{CStr, CString};
+use std::ptr;
+use wfinfo_layout::{layout_json, wfinfo_layout, wfinfo_layout_free};
 
 // OCR.pixleRewardWidth, pixleRewardHeight, pixleRewardYDisplay, pixelRewardLineHeight.
 const REWARD_WIDTH: i32 = 968;
@@ -462,13 +464,13 @@ fn canon(v: &Value) -> String {
     }
 }
 
-/// `testdata/parity.jsonl`: inputs and the answers the C# `RewardLayout.cs`
+/// `tests/testdata/parity.jsonl`: inputs and the answers the C# `RewardLayout.cs`
 /// gave for them (recorded before it was deleted; doubles compared bit for
 /// bit): the eight cases above with known and unknown scale, wrapped names,
 /// extra columns, noise, tied x values, scale ranges that round at a tie.
 #[test]
 fn answers_equal_the_recorded_csharp_answers() {
-    let data = include_str!("../testdata/parity.jsonl");
+    let data = include_str!("testdata/parity.jsonl");
     let mut count = 0;
     for (n, line) in data.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let case: Value = serde_json::from_str(line).expect("parity line is JSON");
