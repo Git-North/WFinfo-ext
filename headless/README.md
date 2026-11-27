@@ -261,6 +261,9 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
 - `WFINFO_VISION_DEVICE` — Vision compute device: `auto` (Vision chooses),
   `ane`, `gpu` or `cpu`.
 - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+  White space around the path is ignored, and a blank value counts as unset.
+  On macOS a path to a missing file is an error; it does not fall back to
+  Tesseract.
 
 ## Architecture
 

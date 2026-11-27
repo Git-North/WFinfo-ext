@@ -112,6 +112,8 @@ code type-checks without WPF/WinForms/Win32.
     tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
+    Trimmed; blank counts as unset. On macOS a missing file is an error
+    (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.
 - Environment for OCR data dirs derives from the OS XDG config dir when
   `WFINFO_DATA_DIR` is unset — do not assume Windows `%APPDATA%`. On macOS the
   app dir is `~/Library/Application Support/WFInfo`.
