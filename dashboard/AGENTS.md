@@ -15,7 +15,8 @@ and reports the outcome. It is an "independent digital service" (see
 - `deno.json` — tasks (`start`, `dev`, `check`, `test`, `fmt`, `lint`) and
   fmt/lint exclusions (AGENTS.md, README.md, `src/static`).
 - `src/main.ts` — HTTP server: routing (including `/scan`, `POST /scan/run`,
-  `/api/scan`, `/api/scan/targets` and `/scan/screenshot`), env config (`PORT`,
+  `/api/scan`, `/api/scan/targets`, `/scan/screenshot` and
+  `/api/logs/events`), env config (`PORT`,
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
   `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`, `WFINFO_MAC_HELPER`), file
   reading, API endpoints.
@@ -37,6 +38,9 @@ and reports the outcome. It is an "independent digital service" (see
   `scans/latest.json` contract (`OcrEngine` is optional: old records have
   none), plus best-choice resolution with the contract
   tie rules (highest plat, then higher ducats, then the later index).
+- `src/lib/logwatch.ts` — log change events: shared, reference-counted
+  `Deno.watchFs` per directory with a polling fallback (`WatchHub`), and the
+  `/api/logs/events` server-sent events response.
 - `src/lib/recent.ts` — reward-screen event extraction from log lines
   ("…, detected choice: N").
 - `src/lib/items.ts` — market DB parsing: `market_items.json` slug catalog,
@@ -47,8 +51,9 @@ and reports the outcome. It is an "independent digital service" (see
 - `src/lib/govuk.ts` — mirrors govuk-frontend npm assets into a local cache
   (no npm imports at runtime).
 - `src/lib/view.ts` — GOV.UK page templates and bespoke `wf-` styles wiring.
-- `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (polling,
-  filter and the scan-button submit, progressive enhancement),
+- `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (log
+  events with a polling fallback, `/scan` polling, filter and the scan-button
+  submit, progressive enhancement),
   `warframe-info-logo.webp` (brand asset).
 - `src/lib/*_test.ts` + `src/lib/testutil.ts` — offline unit tests.
 
@@ -93,6 +98,23 @@ and reports the outcome. It is an "independent digital service" (see
 - The route is a POST and is loopback-only: a cross-site post is refused, and a
   request from another host needs `WFINFO_SCAN_REMOTE=1`. The dashboard has no
   authentication; a scan captures the screen of the host that runs it.
+- Log views are event-driven: `GET /api/logs/events` sends `event: change`
+  with `{"source": "debug.log" | "ocr_runs"}` on each change, `event: ready`
+  when the stream opens, and `: ping` every 25 s. `?source=` (repeatable)
+  picks the sources; an unknown one gets `400`. The page then re-fetches its
+  JSON endpoint (`/api/logs`, `/api/reward-events`, `/api/ocr-runs`); the
+  events carry no log text.
+- One `Deno.watchFs` per directory, shared and reference counted; it closes
+  when the last stream closes. When `Deno.watchFs` throws or the directory does
+  not exist yet, the server stats every 3 s and still sends events. A change is
+  a new stat stamp (size, mtime, inode), never a content read.
+- Fallback in the page: without `EventSource`, or after 3 stream errors in a
+  row, `dashboard.js` polls as before (`/logs` 3 s, `/recent` 10 s) and pauses
+  while the tab is hidden. An open stream stays open while hidden.
+- Watching is read-only: stat, list and watch only. The dashboard reads
+  WFInfo's own `debug.log`, never the game's `EE.log`.
+- `/scan` still polls `/api/scan` every 3 s. Follow-up: move it to the scan
+  file watcher (`filewatch.ts`, `/api/scan/events`) from the overlay branch.
 - Progressive enhancement: `dashboard.js` posts with `Accept: application/json`
   and renders the status and the command output. Without the script the form
   still works (302 back to `/scan`, or the error page).
@@ -130,6 +152,10 @@ and reports the outcome. It is an "independent digital service" (see
   sandbox.
 - Live smoke: run the server, then fetch `/logs`, `/recent`, `/scan`,
   `/wfmarket`, and a `/wfmarket/<slug>` detail page in a browser.
+- Log-events smoke: point `HOME` (macOS) or `WFINFO_DATA_DIR` at a temp dir,
+  run `curl -N http://127.0.0.1:<port>/api/logs/events`, append a line to the
+  temp `debug.log`, and check for `event: change`. Never write to the real
+  app dir.
 - Scan-button smoke: open `/scan`, press "Scan now", and check the status line
   and the refreshed record — `src/lib/scan_run_test.ts` covers the route with a
   stand-in command; a real press needs the flake's scan tools on the machine.

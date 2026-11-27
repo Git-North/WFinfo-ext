@@ -44,6 +44,7 @@ import {
   slugForName,
 } from "./lib/items.ts";
 import { extractRewardEvents, type RewardLogEvent } from "./lib/recent.ts";
+import { logEventsResponse } from "./lib/logwatch.ts";
 import { govukAsset, warmGovuk } from "./lib/govuk.ts";
 import { fetchItemStats, type LiveStats } from "./lib/wfm.ts";
 import {
@@ -760,6 +761,12 @@ async function handler(
     }
 
     if (path === "/api/logs") return apiLogs();
+    if (path === "/api/logs/events") {
+      return logEventsResponse(req, {
+        "debug.log": { path: DEBUG_LOG, kind: "file" },
+        ocr_runs: { path: RUNS_DIR, kind: "dir" },
+      });
+    }
     if (path === "/api/reward-events") return apiRewardEvents();
     if (path === "/api/ocr-runs") return apiOcrRuns();
     if (path === "/api/scan") return apiScan();
