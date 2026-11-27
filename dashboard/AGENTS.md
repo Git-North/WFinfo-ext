@@ -108,7 +108,9 @@ and reports the outcome. It is an "independent digital service" (see
   the one loopback check for the lists and for `POST /scan/run`. The server
   listens on all interfaces (`Deno.serve` without `hostname`).
 - Log views are event-driven: `GET /api/logs/events` sends `event: change`
-  with `{"source": "debug.log" | "ocr_runs"}` on each change, `event: ready`
+  with `{"source": "debug.log" | "ocr_runs" | "scan"}` on each change
+  (`dashboardSources` in `src/lib/logwatch.ts`; `scan` is
+  `scans/latest.json`), `event: ready`
   when the stream opens, and `: ping` every 25 s. `?source=` (repeatable)
   picks the sources; an unknown one gets `400`. The page then re-fetches its
   JSON endpoint (`/api/logs`, `/api/reward-events`, `/api/ocr-runs`); the
@@ -122,8 +124,10 @@ and reports the outcome. It is an "independent digital service" (see
   while the tab is hidden. An open stream stays open while hidden.
 - Watching is read-only: stat, list and watch only. The dashboard reads
   WFInfo's own `debug.log`, never the game's `EE.log`.
-- `/scan` still polls `/api/scan` every 3 s. Follow-up: move it to the scan
-  file watcher (`filewatch.ts`, `/api/scan/events`) from the overlay branch.
+- `/scan` is live: it re-fetches `/api/scan` on each `scan` change (a watch
+  scan publishes a fast and a deep record, so two changes) and polls every
+  3 s only without events. The scan body shows the record's `Notice` and,
+  while a `Stage: "fast"` record is newest, "Fast result refining…".
 - Progressive enhancement: `dashboard.js` posts with `Accept: application/json`
   and renders the status and the command output. Without the script the form
   still works (302 back to `/scan`, or the error page).

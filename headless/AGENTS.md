@@ -42,7 +42,7 @@ code type-checks without WPF/WinForms/Win32.
 - `--watch` scans automatically: `ScanWatcher` tails EE.log and runs a scan per
   "Got rewards" line. The game writes that line before the panel is on screen,
   so a triggered scan re-captures until a part is recognised (or `--wait`
-  expires) and writes no record for a screen it could not read. EE.log lives in
+  expires). EE.log lives in
   the Steam/Proton prefix (macOS: `~/Library/Application Support/Steam`
   compatdata, or a CrossOver bottle; the newest log wins); `--log`/
   `$WFINFO_EE_LOG` override the search. The watch is event-based on every OS
@@ -175,6 +175,33 @@ code type-checks without WPF/WinForms/Win32.
   `libexec/dotnet` and `DYLD_PRINT_LIBRARIES=1`; no `libgdiplus` line may
   appear for a scan or a self-check (Homebrew's `bin/dotnet` is a bash script,
   and SIP strips `DYLD_*` there).
+- Scan passes (macOS Vision; `ScanRunner`): a watch scan
+  (`RunWatchAsync`, `Trigger: "watch"`) runs a fast pass
+  (`VisionRewardScan.RunFast`: `rewards --fast`, which reads no tiles; one
+  read at the known or last estimated UI scale) with the re-capture loop and
+  publishes it (`Stage: "fast"`) when it has parts. Then ALWAYS a deep pass
+  on the same capture (`--file`, accurate, tiles, unknown-scale second pass),
+  published with the same `ScanId` (`Stage: "deep"`). The deep record never
+  shows fewer parts than the fast one. Manual scans (`Trigger: "manual"`)
+  read once, accurate (`Stage: "single"`), unless `--two-pass`. Linux and
+  `--ocr tesseract` read once.
+- Keep-last-good (`ScanPublisher`, every OS): a record without choices does
+  not replace a `latest.json` that has choices. That record stays with a
+  `Notice`, `last.png` stays, and the empty or failed record goes only into
+  the history (SCN-001 for nothing found). Keep `ScanPublisher.Decide` pure;
+  `tests/scan-flow/dotnet-passes` tests it.
+- Every caught scan failure sets `ErrorCode`/`ErrorName`/`ErrorAction` from
+  the catalog: a `ScanFailure` or a known leading code in the helper's error
+  text, the layout's `{"error":{"code",...}}` (a plain string is LAY-002),
+  DllNotFound → SYS-005; anything else gets `ErrorCatalog.ForException` and
+  `CrashReport.Write`. Bad options (`ArgumentException`) stay a fatal CLI
+  error.
+- Watch notifications follow `ExtSettings.Load().Notifications`, read at each
+  trigger (default off; `--no-notify` wins). Manual scans follow
+  `--no-notify` only.
+- Tests that run the runner set `HOME` and `CFFIXED_USER_HOME` (macOS; .NET
+  ignores `HOME` alone there) or `WFINFO_DATA_DIR` (Linux) to a temp root,
+  and refuse to run when the app dir is the real one.
 - `scans/last.png` and `scans/latest.json` are one pair: write both under
   per-process temporary names in `scans/` (`last.png.<pid>.tmp`,
   `latest.json.<pid>.tmp`), then rename the screenshot and the record last.

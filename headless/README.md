@@ -220,6 +220,7 @@ nix run .#scan-watch -- --log /path/EE.log    # watch a specific log
 | `--log <path>` | EE.log to watch; default is the Steam/Proton prefix, else `$WFINFO_EE_LOG` |
 | `--wait <seconds>` | keep re-capturing until a part is recognised (default 10 in watch mode) |
 | `--cooldown <seconds>` | ignore further triggers for this long after a scan starts (default 5) |
+| `--two-pass` | macOS: fast pass, then deep pass on the same capture, for a manual scan |
 
 The engines, market sheet and price cache are built once at start-up, so a
 triggered scan is one capture plus the OCR — about a second with a warm price
@@ -227,8 +228,45 @@ cache.
 
 The game writes the trigger line *before* the reward panel is on screen, so a
 triggered scan re-captures every 400 ms until a part is recognised or `--wait`
-runs out. A capture that finds nothing yet writes no record, so the dashboard
-only shows scans whose names were read.
+runs out.
+
+On macOS a triggered scan has two passes. Both records have the same
+`ScanId` and `Trigger: "watch"`:
+
+1. **Fast** (`Stage: "fast"`): Vision fast mode (`rewards --fast`), no tiles,
+   one read at the EE.cfg UI scale, else at the scale the last deep pass
+   estimated, else over the wide range. The re-capture loop runs here. The
+   record is published at once when it has parts.
+2. **Deep** (`Stage: "deep"`): always, also when the fast pass found parts or
+   found nothing. The runner gives the same capture back to the helper
+   (`--file`): accurate mode, tiles, and the unknown-scale second pass. The
+   deep record replaces the fast one. When the deep pass reads fewer parts
+   than the fast pass, or fails, the deep record keeps the fast parts (a
+   failure also sets `Notice`).
+
+Only the selected capture becomes `last.png`. `--two-pass` runs the same two
+passes for a manual scan (also with `--file`, the test path). Measured on
+Apple silicon with a synthetic 1920x1080 screen (`--file`, warm helper): fast
+record about 170 ms after start, deep record about 410 ms (known UI scale) or
+740 ms (unknown); one manual accurate pass about 270 ms. The first accurate
+call of a new process can take some seconds more (Vision prepares its model).
+
+A watch scan posts a desktop notification only when
+`wfinfo-ext-settings.json` has `notifications: true` (default off; read at
+each trigger; `--no-notify` still wins). The deep record notifies again only
+when it reads other names than the fast record (`ScanNews.FoundNewNames`).
+Linux and `--ocr tesseract` scans have one pass (`Stage: "single"`).
+
+**Keep-last-good.** Manual scans (`Trigger: "manual"`, CLI, hotkey,
+dashboard) read once, accurate (`Stage: "single"`). A record without choices
+(nothing found, or a failure) does not replace a previous record with
+choices: `latest.json` keeps that record with a `Notice` ("Last scan found
+nothing at 14:32", "Last scan failed at 14:32: CAP-001 Shutter"), and
+`last.png` stays. Only the record file changes (same atomic rename). The empty
+or failed record still goes into `scan-<stamp>.json` with its `ErrorCode`.
+Without a previous good record the empty or failed record is published. A
+deep pass that also found nothing follows the same rule. A new good record
+has no `Notice`.
 
 The watch is event-based on every OS: a file watcher on the log's folder
 (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows),
@@ -342,8 +380,17 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   `0` when a theme is forced.
 - `Best`/`BestDucats` follow the Windows overlay ranking; the same entry carries
   `"Best": true`.
-- A scan with no reward screen on screen still writes a record with
-  `Choices: []` (`Error: null`); a capture or database failure sets `Error`.
+- A scan with no reward screen on screen still writes a history record with
+  `Choices: []`, `Error: null` and `ErrorCode: "SCN-001"` (Hollow); a capture
+  or database failure sets `Error`. `latest.json` follows the keep-last-good
+  rule (see Automatic scanning).
+- `ScanId` (`yyyyMMdd_HHmmssfff-pid`), `Stage` (`fast`, `deep`, `single`),
+  `Trigger` (`watch`, `manual`): see Automatic scanning.
+- `ErrorCode`, `ErrorName`, `ErrorAction`: the catalog entry
+  (`errors/catalog.json`) of `Error` or of SCN-001. A failure with no entry
+  gets a generated `GEN-` code and a crash report (`CrashReport`, a `~/` path).
+- `Notice`: a note on a kept record, or on a deep record that shows the fast
+  result; null otherwise.
 
 ## Environment
 
