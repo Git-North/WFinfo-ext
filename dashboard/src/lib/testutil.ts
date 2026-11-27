@@ -63,3 +63,46 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Read a streamed response body as text. `until(part)` waits for `part` to
+ * appear. One read stays pending across waits, so a chunk is never lost.
+ */
+export function streamText(body: ReadableStream<Uint8Array>): {
+  readonly text: string;
+  until: (part: string, ms?: number) => Promise<void>;
+  cancel: () => Promise<void>;
+} {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  return {
+    get text() {
+      return text;
+    },
+    async until(part: string, ms = 3000): Promise<void> {
+      const deadline = Date.now() + ms;
+      while (!text.includes(part)) {
+        const left = deadline - Date.now();
+        if (left <= 0) throw new Error(`no "${part}" within ${ms} ms: ${text}`);
+        pending ??= reader.read();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const chunk = await Promise.race([
+          pending,
+          new Promise<null>((r) => {
+            timer = setTimeout(() => r(null), left);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (chunk === null) continue;
+        pending = null;
+        if (chunk.done) throw new Error(`stream ended: ${text}`);
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+    },
+    async cancel(): Promise<void> {
+      await reader.cancel().catch(() => {});
+    },
+  };
+}
