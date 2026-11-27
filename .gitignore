@@ -256,3 +256,7 @@ theme_test_results.txt
 
 # SwiftPM build output (headless/macos helper)
 .build/
+
+# Cargo build output of the Rust crates under headless/ (cargo run by hand; the
+# csproj builds into headless/obj/).
+headless/**/target/

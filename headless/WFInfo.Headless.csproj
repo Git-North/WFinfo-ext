@@ -55,6 +55,7 @@
     <Compile Include="Platform\*.cs" />
     <Compile Include="Scan\*.cs" />
     <Compile Include="macos\*.cs" />
+    <Compile Include="OverlayPin.cs" />
   </ItemGroup>
 
   <!--
@@ -101,6 +102,59 @@
   <Target Name="PublishMacHelper" AfterTargets="Publish" DependsOnTargets="BuildMacHelper;BuildRustLayout"
           Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <Copy SourceFiles="$(OutDir)wfinfo-mac;$(OutDir)libwfinfo_layout.dylib" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    Every OS with a Rust toolchain: build the overlay plugin client
+    (headless/native/overlay, a cdylib that OverlayPin.cs calls through
+    [DllImport]) and copy it next to the runner. Without cargo the target is
+    skipped, the runner builds as before, and overlay pinning reports PLG-019.
+    macOS: `brew install rust`; Linux: cargo comes from the flake. A build
+    that cargo starts and fails does fail this build.
+    -p:BuildOverlayClient=false turns the target off.
+  -->
+  <PropertyGroup>
+    <BuildOverlayClient Condition="'$(BuildOverlayClient)' == ''">true</BuildOverlayClient>
+    <RustOverlayDirectory>$(MSBuildThisFileDirectory)native/overlay</RustOverlayDirectory>
+    <RustOverlayLibrary Condition="$([MSBuild]::IsOSPlatform('OSX'))">libwfinfo_overlay.dylib</RustOverlayLibrary>
+    <RustOverlayLibrary Condition="$([MSBuild]::IsOSPlatform('Windows'))">wfinfo_overlay.dll</RustOverlayLibrary>
+    <RustOverlayLibrary Condition="'$(RustOverlayLibrary)' == ''">libwfinfo_overlay.so</RustOverlayLibrary>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <RustOverlaySource Include="$(MSBuildThisFileDirectory)native/overlay/src/**/*.rs;$(MSBuildThisFileDirectory)native/overlay/Cargo.toml;$(MSBuildThisFileDirectory)native/overlay/Cargo.lock" />
+  </ItemGroup>
+
+  <Target Name="FindCargo" Condition="'$(BuildOverlayClient)' == 'true'">
+    <Exec Command="cargo --version" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true"
+          StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="CargoExitCode" />
+    </Exec>
+    <Message Condition="'$(CargoExitCode)' != '0'" Importance="high"
+             Text="cargo not found: building without the overlay plugin client (overlay pinning stays off)." />
+  </Target>
+
+  <!-- The order matters: CompileRustOverlay's condition needs FindCargo's
+       result, and MSBuild reads a target's condition before it runs that
+       target's own dependencies. -->
+  <Target Name="BuildRustOverlay" AfterTargets="Build" DependsOnTargets="FindCargo;CompileRustOverlay" />
+
+  <!-- WorkingDirectory: rustup reads rust-toolchain.toml from there.
+       crate-type cdylib: the crate is also an rlib for its tests, and cargo
+       drops LTO when it builds both. -->
+  <Target Name="CompileRustOverlay"
+          Condition="'$(BuildOverlayClient)' == 'true' And '$(CargoExitCode)' == '0'"
+          Inputs="@(RustOverlaySource)"
+          Outputs="$(OutDir)$(RustOverlayLibrary)">
+    <Exec Command="cargo rustc --release --locked --lib --crate-type cdylib" WorkingDirectory="$(RustOverlayDirectory)"
+          EnvironmentVariables="CARGO_TARGET_DIR=$(MSBuildThisFileDirectory)obj/rust-overlay" />
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)obj/rust-overlay/release/$(RustOverlayLibrary)" DestinationFolder="$(OutDir)" />
+  </Target>
+
+  <!-- `dotnet publish` copies only the build's .NET outputs. -->
+  <Target Name="PublishRustOverlay" AfterTargets="Publish" DependsOnTargets="BuildRustOverlay">
+    <Copy Condition="Exists('$(OutDir)$(RustOverlayLibrary)')" SourceFiles="$(OutDir)$(RustOverlayLibrary)"
+          DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>

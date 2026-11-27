@@ -53,6 +53,9 @@ and can start a reward-screen scan from its Scan page.
   (logs, OCR runs, market DBs), plus the browser-triggered scan button.
   Child: `dashboard/AGENTS.md`.
 - `tests/` — OCR/theme regression framework docs + scenario data. Child: `tests/AGENTS.md`.
+- `errors/` — the shared error catalog (codes, names, generated-code rule,
+  crash-report layout) for the runner, helper, Rust libraries and dashboard.
+  Child: `errors/AGENTS.md`.
 - `docs/` — GitHub Pages website (has CNAME/index.html; do not drop engineering
   docs into it), owned at root.
 - `flake.nix`, `.gitignore`, README files, `.github/` (CI workflows),
@@ -155,5 +158,7 @@ Windows-equivalent (Path.Combine semantics) and compile-check them here.
   env vars, package pins.
 - `dashboard/AGENTS.md` — Deno dashboard: routes, data sources, offline-gate
   rules, GOV.UK styling conventions.
+- `errors/AGENTS.md` — error catalog: format, code and name rules, generated
+  codes, crash reports, no personal data.
 - `tests/AGENTS.md` — OCR/theme regression framework: scenario contract,
   data layout, known gaps.
