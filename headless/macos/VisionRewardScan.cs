@@ -25,7 +25,12 @@ namespace WFInfo.MacOS
     /// </summary>
     internal sealed class VisionRewardScan
     {
-        private const int TimeoutMs = 30000;
+        /// <summary>
+        /// Helper timeout per call. The first Vision call of a new helper binary
+        /// prepares Apple's models (40-50 s once), so 120 s; the dashboard kills
+        /// a scan at 180 s.
+        /// </summary>
+        private const int TimeoutMs = 120000;
 
         private readonly double? _uiScale;
 

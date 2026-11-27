@@ -67,7 +67,8 @@ dotnet run --project headless -- --scan --watch                # scan on every r
   Screen & System Audio Recording. Restart that app after the change.
 - The first Vision call of a new helper binary prepares Apple's models (40–50 s
   once). Later calls take about 190 ms for one part image and about 250 ms for
-  eight in one call (accurate mode).
+  eight in one call (accurate mode). The scan gives each helper call 120 s, so
+  the first scan does not time out (the dashboard stops a scan at 180 s).
 - `--device` (or `WFINFO_VISION_DEVICE`) pins the compute device for every
   Vision stage that lists it (`wfinfo-mac devices`). Vision accepts the pin;
   timings are nearly the same on every device, so they do not show which unit

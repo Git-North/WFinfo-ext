@@ -183,7 +183,8 @@ code type-checks without WPF/WinForms/Win32.
   them.
   The first Vision call of a new helper binary prepares Apple's models (40–50 s
   once); later calls take about 190 ms (one image) or 250 ms (eight in one
-  call).
+  call). `VisionRewardScan` gives each helper call 120 s for that first call;
+  keep it under the dashboard's 180 s scan deadline.
 - macOS capture needs Screen Recording for the app that starts the scan (the
   terminal, or the app that runs the dashboard). Without it the capture error
   names the setting.
