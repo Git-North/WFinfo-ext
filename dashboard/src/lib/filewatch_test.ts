@@ -116,3 +116,57 @@ Deno.test("FileWatch: a missing directory falls back to polling until it appears
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("FileWatch: a Windows event path with a backslash is seen", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "wfinfo_filewatch_sep_" });
+  const file = `${dir}/latest.json`;
+  // A stand-in watcher that reports paths the way Windows does: the watched
+  // folder as given, then a backslash before the file name.
+  const realWatch = Deno.watchFs;
+  let emit: (path: string) => void = () => {};
+  let end: () => void = () => {};
+  Deno.watchFs = () => {
+    const queue: string[] = [];
+    let wake: () => void = () => {};
+    let closed = false;
+    emit = (path) => {
+      queue.push(path);
+      wake();
+    };
+    end = () => {
+      closed = true;
+      wake();
+    };
+    const events = async function* () {
+      while (!closed) {
+        while (queue.length > 0) {
+          yield { kind: "modify", paths: [queue.shift()!] } as Deno.FsEvent;
+        }
+        if (!closed) await new Promise<void>((resolve) => wake = resolve);
+      }
+    }();
+    return Object.assign(events, {
+      close: () => end(),
+    }) as unknown as Deno.FsWatcher;
+  };
+  // The polls are too slow to help: only the event can report the change.
+  const fw = new FileWatch({
+    path: file,
+    pollMs: 60_000,
+    safetyPollMs: 60_000,
+    debounceMs: 10,
+    settleMs: 10,
+  });
+  const seen: (string | null)[] = [];
+  const sub = fw.subscribe((text) => seen.push(text));
+  try {
+    await Deno.writeTextFile(file, "new record");
+    emit(`${dir}\\latest.json`);
+    assertEquals(await nextChange(seen, 1500), "new record");
+  } finally {
+    sub.unsubscribe();
+    await fw.idle();
+    Deno.watchFs = realWatch;
+    await Deno.remove(dir, { recursive: true });
+  }
+});

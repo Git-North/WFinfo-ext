@@ -50,13 +50,18 @@ function readOrNull(path: string): string | null {
   }
 }
 
+/** Windows reports event paths with "\\", also under a "/" path we watch. */
+function sepIndex(path: string): number {
+  return Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+}
+
 function dirOf(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i <= 0 ? (i === 0 ? "/" : ".") : path.slice(0, i);
+  const i = sepIndex(path);
+  return i <= 0 ? (i === 0 ? path.slice(0, 1) : ".") : path.slice(0, i);
 }
 
 function baseOf(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
+  return path.slice(sepIndex(path) + 1);
 }
 
 function isDir(path: string): boolean {

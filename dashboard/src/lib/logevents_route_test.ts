@@ -6,15 +6,21 @@ import { logHub } from "./logwatch.ts";
  * Route proof for GET /api/logs/events through the real handler. src/main.ts
  * resolves its app dir from the environment at import time, so the fixture
  * is set up BEFORE the dynamic import (own file: Deno gives each test file its
- * own worker). On macOS the app dir lives under HOME, so HOME points at the
- * fixture root too. The test only writes inside its temp dir.
+ * own worker). On macOS the app dir lives under HOME and on Windows under
+ * APPDATA, so those point at the fixture root too. The test only writes inside
+ * its temp dir.
  */
 Deno.test("GET /api/logs/events: debug.log and ocr_runs changes reach the client", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_logevents_route_" });
   const savedHome = Deno.env.get("HOME");
   const savedData = Deno.env.get("WFINFO_DATA_DIR");
+  const savedAppData = Deno.env.get("APPDATA");
   try {
-    const appDir = resolveAppDir({ WFINFO_DATA_DIR: root, HOME: root });
+    const appDir = resolveAppDir({
+      WFINFO_DATA_DIR: root,
+      HOME: root,
+      APPDATA: root,
+    });
     await Deno.mkdir(`${appDir}/ocr_runs`, { recursive: true });
     await Deno.writeTextFile(
       `${appDir}/debug.log`,
@@ -23,6 +29,7 @@ Deno.test("GET /api/logs/events: debug.log and ocr_runs changes reach the client
 
     Deno.env.set("WFINFO_DATA_DIR", root);
     Deno.env.set("HOME", root);
+    if (Deno.build.os === "windows") Deno.env.set("APPDATA", root);
     const { handler } = await import("../main.ts");
 
     const bad = await handler(
@@ -66,6 +73,8 @@ Deno.test("GET /api/logs/events: debug.log and ocr_runs changes reach the client
     else Deno.env.set("HOME", savedHome);
     if (savedData === undefined) Deno.env.delete("WFINFO_DATA_DIR");
     else Deno.env.set("WFINFO_DATA_DIR", savedData);
+    if (savedAppData === undefined) Deno.env.delete("APPDATA");
+    else Deno.env.set("APPDATA", savedAppData);
     await Deno.remove(root, { recursive: true });
   }
 });
