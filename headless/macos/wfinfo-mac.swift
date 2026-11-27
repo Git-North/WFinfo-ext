@@ -638,7 +638,8 @@ func runRewards(_ raw: ArraySlice<String>) async throws {
     // Vision drops lines in a wide strip that it reads in a narrow crop (a
     // wrapped "BLUEPRINT" under one card, squad names). With a known UI scale,
     // the strip is also read as narrow tiles, one per position a card can take.
-    let tiles = a == b ? rewardTiles(crop: crop, imageWidth: image.width, screenScaling: s, uiScale: a, rewardWidth: w) : []
+    // --fast reads the strip only (the scan's quick first pass).
+    let tiles = a == b && !fast ? rewardTiles(crop: crop, imageWidth: image.width, screenScaling: s, uiScale: a, rewardWidth: w) : []
     let regions = [crop] + tiles
     let results = try await withThrowingTaskGroup(of: (Int, [[String: Any]]).self) { group -> [[[String: Any]]] in
         for (index, region) in regions.enumerated() {
