@@ -4,12 +4,15 @@ import {
   assertStringIncludes,
   assertTrue,
 } from "./testutil.ts";
+import { resolveAppDir } from "./fsdata.ts";
 
 /**
  * Route proof for the overlay: GET /overlay, GET /api/scan?view=overlay and
  * the server-sent events of GET /api/scan/events. src/main.ts resolves its
  * app-data dir at import time, so WFINFO_DATA_DIR is set BEFORE the dynamic
- * import. Own file on purpose: each test file gets its own worker.
+ * import. On macOS the app dir is under HOME (as for the .NET app, which
+ * ignores WFINFO_DATA_DIR there) and on Windows under APPDATA, so both point at
+ * the fixture root too. Own file on purpose: each test file gets its own worker.
  */
 
 function record(part: string, plat: number, extra: Record<string, unknown>) {
@@ -100,10 +103,18 @@ class SseReader {
 
 Deno.test("overlay routes: page, polling API and live events", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_overlay_route_" });
+  const savedHome = Deno.env.get("HOME");
+  const savedAppData = Deno.env.get("APPDATA");
   try {
-    const appDir = `${root}/WFInfo`;
+    const appDir = resolveAppDir({
+      WFINFO_DATA_DIR: root,
+      HOME: root,
+      APPDATA: root,
+    });
     const scanFile = `${appDir}/scans/latest.json`;
     Deno.env.set("WFINFO_DATA_DIR", root);
+    Deno.env.set("HOME", root);
+    if (Deno.build.os === "windows") Deno.env.set("APPDATA", root);
     const { handler } = await import("../main.ts");
 
     // No scans/ directory, no record: the empty state.
@@ -231,6 +242,10 @@ Deno.test("overlay routes: page, polling API and live events", async () => {
     // the test (Deno's sanitizers check this).
     await new Promise((r) => setTimeout(r, 50));
   } finally {
+    if (savedHome === undefined) Deno.env.delete("HOME");
+    else Deno.env.set("HOME", savedHome);
+    if (savedAppData === undefined) Deno.env.delete("APPDATA");
+    else Deno.env.set("APPDATA", savedAppData);
     await Deno.remove(root, { recursive: true });
   }
 });
