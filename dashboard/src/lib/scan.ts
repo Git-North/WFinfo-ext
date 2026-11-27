@@ -58,6 +58,8 @@ export interface ScanResult {
   screenshotWidth: number | null;
   screenshotHeight: number | null;
   uiScaling: number | null;
+  /** "vision-layout" (macOS) or "tesseract"; null in records older than the field. */
+  ocrEngine: string | null;
   choices: ScanChoice[];
   best: ScanBest | null;
   bestDucats: ScanBestDucats | null;
@@ -174,6 +176,7 @@ export function parseScanResult(raw: unknown): ScanResult | null {
     screenshotWidth: num(get(o, "ScreenshotWidth")),
     screenshotHeight: num(get(o, "ScreenshotHeight")),
     uiScaling: num(get(o, "UiScaling")),
+    ocrEngine: str(get(o, "OcrEngine")),
     choices,
     best: parseBest(get(o, "Best")),
     bestDucats: parseBestDucats(get(o, "BestDucats")),

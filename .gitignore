@@ -253,3 +253,6 @@ headless/obj/
 test_results_*.json
 theme_test_results.txt
 *.user
+
+# SwiftPM build output (headless/macos helper)
+.build/

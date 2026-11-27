@@ -4,17 +4,20 @@ import {
   assertStringIncludes,
   assertTrue,
 } from "./testutil.ts";
+import { resolveAppDir } from "./fsdata.ts";
 
 /**
  * Route proof for the scan endpoints. src/main.ts resolves its app-data dir
  * from the environment at import time, so the fixture directory is created
  * and WFINFO_DATA_DIR is set BEFORE the module is imported, and removed in
- * the test's cleanup.
+ * the test's cleanup. On macOS the app dir ignores WFINFO_DATA_DIR and lives
+ * under HOME, so HOME points at the fixture root too.
  */
 Deno.test("scan routes: page, API and screenshot against a fixture app dir", async () => {
   const root = await Deno.makeTempDir({ prefix: "wfinfo_scan_route_" });
+  const savedHome = Deno.env.get("HOME");
   try {
-    const appDir = `${root}/WFInfo`;
+    const appDir = resolveAppDir({ WFINFO_DATA_DIR: root, HOME: root });
     await Deno.mkdir(`${appDir}/scans`, { recursive: true });
     const record = {
       Version: 1,
@@ -66,6 +69,7 @@ Deno.test("scan routes: page, API and screenshot against a fixture app dir", asy
     // from the environment at import time, so a static import would capture
     // the real user directory before the fixture can be configured.
     Deno.env.set("WFINFO_DATA_DIR", root);
+    Deno.env.set("HOME", root);
     const { handler } = await import("../main.ts");
 
     // /scan — the page renders the verdict, the choice table and metadata.
@@ -127,6 +131,8 @@ Deno.test("scan routes: page, API and screenshot against a fixture app dir", asy
     const emptyApiJson = await emptyApi.json();
     assertStringIncludes(emptyApiJson.body as string, "No scan recorded yet");
   } finally {
+    if (savedHome === undefined) Deno.env.delete("HOME");
+    else Deno.env.set("HOME", savedHome);
     await Deno.remove(root, { recursive: true });
     assertTrue(!(await exists(root)), "fixture removed");
   }

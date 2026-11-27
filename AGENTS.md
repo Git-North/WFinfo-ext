@@ -30,8 +30,11 @@ Windows release is `.NET Framework 4.8` + WPF/WinForms and is Windows-only.
 
 Since 2026 the repo also carries a **Linux-native headless core**: the
 platform-neutral OCR/theme/market-data/test code (linked, not copied) builds and
-runs as a .NET 9 console runner via the Nix flake in `flake.nix`. Windows UI and
-Win32 surfaces are NOT portable and stay Windows-only.
+runs as a .NET 9 console runner via the Nix flake in `flake.nix`. The same
+runner also builds natively on macOS (Homebrew .NET, no Nix): there Apple Vision
+reads the text and ScreenCaptureKit captures the screen (`headless/macos/`);
+the macOS scan loads no libgdiplus and changes no shared `WFInfo/` file.
+Windows UI and Win32 surfaces are NOT portable and stay Windows-only.
 
 The repo also carries `dashboard/`: a Deno + GOV.UK Frontend web dashboard
 ("Warframe Info", an independent digital service) that presents the local
@@ -42,7 +45,10 @@ and can start a reward-screen scan from its Scan page.
 
 - `WFInfo/` — Windows desktop app AND the shared core sources (Ocr.cs, Data.cs,
   LanguageProcessing/, Services/, Settings/, Tests/). Child: `WFInfo/AGENTS.md`.
-- `headless/` — Linux-native runner project + platform seams. Child: `headless/AGENTS.md`.
+- `headless/` — Linux/macOS-native runner project, platform seams, and the
+  macOS Swift helper (`headless/macos/`). Child: `headless/AGENTS.md`.
+  Carries the reward-screen scan (`--scan`) and its automatic EE.log-driven mode
+  (`--scan --watch`).
 - `dashboard/` — Deno + GOV.UK Frontend web dashboard over local WFInfo data
   (logs, OCR runs, market DBs), plus the browser-triggered scan button.
   Child: `dashboard/AGENTS.md`.
@@ -86,6 +92,10 @@ Run inside `nix develop`:
   (grim capture + OCR + prices; writes `<app dir>/scans/latest.json`).
 - `nix run .#scan` — the same scan through the flake, for a window-manager
   hotkey (`--file <png>` prices an existing screenshot).
+- `nix run .#scan-watch` — automatic scanning: tail Warframe's `EE.log`
+  (Steam/Proton prefix, or `--log`/`$WFINFO_EE_LOG`) and scan on every reward
+  screen. `--once` scans on the first trigger and exits, which proves the
+  trigger path without a game session.
 
 Dashboard (Deno, also inside `nix develop`):
 
@@ -139,7 +149,7 @@ Windows-equivalent (Path.Combine semantics) and compile-check them here.
 
 - `WFInfo/AGENTS.md` — Windows app + shared core: architecture, entry flow,
   test-mode dispatch, portability rules.
-- `headless/AGENTS.md` — Linux runner: linked-source discipline, platform seams,
+- `headless/AGENTS.md` — Linux/macOS runner: linked-source discipline, platform seams,
   env vars, package pins.
 - `dashboard/AGENTS.md` — Deno dashboard: routes, data sources, offline-gate
   rules, GOV.UK styling conventions.
