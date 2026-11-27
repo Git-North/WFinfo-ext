@@ -7,7 +7,9 @@ GOV.UK Frontend that opens in a browser and presents WFInfo's local application
 data — OCR logs, OCR test-suite results, cached market prices, and the newest
 OCR reward-screen scan. It also starts a scan on demand: the "Scan now" button
 on the Scan page posts to `/scan/run`, which runs the configured scan command
-and reports the outcome. It is an "independent digital service" (see
+and reports the outcome. The `/overlay` page shows only the newest scan in a
+compact, live view for a small in-game browser window (Steam overlay). It is an
+"independent digital service" (see
 `src/static/warframe-info-logo.webp`): no crown crest, no affiliation claims.
 
 ## Ownership
@@ -15,8 +17,9 @@ and reports the outcome. It is an "independent digital service" (see
 - `deno.json` — tasks (`start`, `dev`, `check`, `test`, `fmt`, `lint`) and
   fmt/lint exclusions (AGENTS.md, README.md, `src/static`).
 - `src/main.ts` — HTTP server: routing (including `/scan`, `POST /scan/run`,
-  `/api/scan`, `/api/scan/targets`, `/scan/screenshot`, `/api/logs/events`,
-  `POST /settings` and `/api/settings`), env config (`PORT`,
+  `/api/scan` (`?view=overlay` for the overlay body), `/api/scan/targets`,
+  `/scan/screenshot`, `/overlay`, the `/api/scan/events` event stream,
+  `/api/logs/events`, `POST /settings` and `/api/settings`), env config (`PORT`,
   `WFINFO_DATA_DIR`, `WFINFO_GOVUK_DIR`, `WFINFO_CACHE_DIR`, `WFINFO_SCAN_CMD`,
   `WFINFO_SCAN_ROOT`, `WFINFO_SCAN_REMOTE`, `WFINFO_MAC_HELPER`), file
   reading, API endpoints.
@@ -57,9 +60,15 @@ and reports the outcome. It is an "independent digital service" (see
 - `src/lib/govuk.ts` — mirrors govuk-frontend npm assets into a local cache
   (no npm imports at runtime).
 - `src/lib/view.ts` — GOV.UK page templates and bespoke `wf-` styles wiring.
+- `src/lib/overlay.ts` — `/overlay` page and its live body (no GOV.UK header,
+  footer or tabs; dark, high contrast; `wf-ov` classes).
+- `src/lib/filewatch.ts` — `FileWatch`: tells subscribers when one file's text
+  changes (`Deno.watchFs` on its directory, polling fallback). Feeds
+  `/api/scan/events`.
 - `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (log
-  and scan events with a polling fallback, filter and the scan-button
-  submit, progressive enhancement),
+  and scan events with a polling fallback, `/scan` polling, filter and the
+  scan-button submit, progressive enhancement), `overlay.css` + `overlay.js`
+  (the overlay page: styles, event stream with polling fallback, Scan button),
   `warframe-info-logo.webp` (brand asset).
 - `src/lib/*_test.ts` + `src/lib/testutil.ts` — offline unit tests.
 
@@ -138,6 +147,22 @@ and reports the outcome. It is an "independent digital service" (see
 - The route is a POST and is loopback-only: a cross-site post is refused, and a
   request from another host needs `WFINFO_SCAN_REMOTE=1`. The dashboard has no
   authentication; a scan captures the screen of the host that runs it.
+- Overlay live updates: `/api/scan/events` is a server-sent event stream. It
+  opens with the current state, then sends one `scan` event per change of the
+  text of `scans/latest.json`, plus a `: ping` comment every 15 s. Each event
+  carries `{updatedAt, version, body}`; `body` is server-rendered and escaped,
+  the same markup as `/api/scan?view=overlay`. One shared `FileWatch` serves
+  every stream and runs only while a stream is open. It reads the file twice
+  before it reports, so a half-written record is not pushed (the runner
+  writes in place). Target latency: under 1 s from the write.
+- `overlay.js` uses the event stream first. On a stream error it polls
+  `/api/scan?view=overlay` every 1 s and tries the stream again every 15 s.
+  It does not pause when the page reports itself hidden: a pinned in-game
+  window can count as hidden.
+- The overlay Scan button posts to `/scan/run` from the same origin, so the
+  loopback and same-origin guards apply unchanged. `/overlay?display=…&window=…`
+  passes those capture tokens to the post as they are; the server validates
+  them. The button stays hidden without the script.
 - The display and window lists (`/api/scan/targets` and the `/scan` page)
   carry the host's window titles. They follow the same rule: only a loopback
   client gets them, unless `WFINFO_SCAN_REMOTE=1`. Another host gets empty
@@ -202,6 +227,11 @@ and reports the outcome. It is an "independent digital service" (see
   sandbox.
 - Live smoke: run the server, then fetch `/logs`, `/recent`, `/scan`,
   `/wfmarket`, and a `/wfmarket/<slug>` detail page in a browser.
+- Overlay smoke: open `/overlay` at 300–500 px wide; 4 parts fit with no
+  scroll. Keep `curl -N /api/scan/events` open, rewrite `scans/latest.json`,
+  and check that a new `event: scan` arrives in under 1 s.
+  `src/lib/overlay_route_test.ts` and `src/lib/filewatch_test.ts` cover this
+  offline.
 - Log-events smoke: point `HOME` (macOS) or `WFINFO_DATA_DIR` at a temp dir,
   run `curl -N http://127.0.0.1:<port>/api/logs/events`, append a line to the
   temp `debug.log`, and check for `event: change`. Never write to the real

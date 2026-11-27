@@ -82,6 +82,10 @@ code type-checks without WPF/WinForms/Win32.
   `uiScaleMin`/`uiScaleMax`, `crop`, `lines[]` (`text`, `confidence`, `box`
   in full-image pixels with a top-left origin), `saved`, `ms`. Keep it stable
   when the Vision API changes.
+- `native/overlay/` — Rust crate `wfinfo-overlay` (all OSes): the client for
+  the Overlay Auto-Pin Millennium plugin (Git-North/steam-overlay-pin), which
+  pins Steam overlay windows. `OverlayPin.cs` is its .NET wrapper. See "Overlay
+  plugin client" under Local Contracts.
 - `Platform/` — seams ONLY: `HeadlessMain.cs` (stub `Main`), `HeadlessServices.cs`
   (window-info service, process finder, screenshot/log-capture stubs,
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
@@ -283,6 +287,48 @@ code type-checks without WPF/WinForms/Win32.
 - `RollForward=Major`: the runner targets net9.0 but runs on a newer runtime
   when 9 is absent (Homebrew ships only the newest .NET).
 
+
+### Overlay plugin client
+
+- One call = one connection to the plugin's socket: one JSON request line, one
+  JSON answer line. The reference is the plugin itself
+  (`backend/cli_socket.lua`, `frontend/remote.ts`); the socket path rule in
+  `src/socket_path.rs` MUST match it.
+- The client uses ONLY that socket. It never starts, stops or changes Steam or
+  the plugin, and never touches the game. No helper process or program sits
+  between WFInfo and the plugin.
+- C ABI: `wfinfo_overlay(const char* json) -> char*` and
+  `wfinfo_overlay_free(char*)`. The request and answer shapes are in
+  `src/lib.rs`. `timeoutMs` (default 10000) covers the whole call, retries
+  included; no path may block longer, and no panic may cross the ABI.
+- Refused connects are retried after 25, 50, 100, 200 and 400 ms. Do not use
+  socket2's `connect_timeout` for Unix sockets: it reads Linux's `EAGAIN` (full
+  backlog) as "in progress".
+- Errors: area `PLG` in `errors/catalog.json`. `src/codes.rs` maps each `Kind`
+  to its entry; `OverlayPin.cs` alone reports PLG-019 and PLG-020. A panic gets
+  a `GEN-` code from `panic|wfinfo_overlay::handle`. `tests/catalog.rs` fails
+  when the code and the catalog differ. A failure answer writes the home folder
+  as `~`; a success answer is the plugin's own.
+- The feature is off by default. The wrapper reads no setting: its caller
+  checks `overlayPin` in `wfinfo-ext-settings.json`.
+- `Pin`/`Unpin` block. A scan calls `RequestAsync` or accepts the wait. After a
+  pin, unpin only when `OverlayPinResult.Changed("browser")` was true: else the
+  user had pinned the browser. Do not unpin `all`, which also unpins the
+  windows the user pinned.
+- The csproj target `BuildRustOverlay` runs on every OS where `cargo` is on
+  PATH and copies the library next to the runner (cargo output under
+  `obj/rust-overlay/`). Without cargo the build succeeds and the wrapper answers
+  PLG-019. `-p:BuildOverlayClient=false` skips it. On Linux, Rust comes from the
+  flake (dev shell and scan apps), never from a system install. Windows is best
+  effort.
+- Dependencies: serde, serde_json, socket2 (std has no Unix-socket connect
+  timeout and no Windows Unix sockets), and libc on Linux (`MSG_NOSIGNAL`).
+  `Cargo.lock` and `rust-toolchain.toml` are committed.
+- Quality: `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+  (pedantic) are clean; every `unsafe` has a `SAFETY` comment. Tests live in
+  `tests/` and talk to a fake plugin only, never to the real socket. The one
+  unit test in `src/ffi.rs` is the panic guard, which no request can reach.
+
 ## Work Guidance
 
 - Build/run inside the flake dev shell: `nix develop -c dotnet ...`.
@@ -352,6 +398,9 @@ code type-checks without WPF/WinForms/Win32.
   no libgdiplus in the loaded images (see the proof above).
 - macOS: `cd headless/macos/layout && cargo test` — the layout cases and the
   parity fixtures PASS (offline, no capture).
+- macOS and Linux (`nix develop`): in `headless/native/overlay`,
+  `cargo test --locked`, `cargo fmt --check` and
+  `cargo clippy --all-targets --locked -- -D warnings` — all clean.
 - macOS: `--scan --no-notify --file <synth png> --ui-scale unknown` — every
   synthetic name priced.
 - macOS: `headless/bin/Debug/net9.0/wfinfo-mac devices` lists the compute
