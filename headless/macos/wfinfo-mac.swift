@@ -521,6 +521,67 @@ func savePNG(_ image: CGImage, to path: String) throws {
     guard FileManager.default.createFile(atPath: path, contents: png) else { throw Failure("cannot write \(path)") }
 }
 
+/// Narrow tiles over the reward strip: one per position a card centre can take
+/// with 1-4 cards (offsets 0, ±1/8, ±2/8, ±3/8 of the strip width from the
+/// screen centre, i.e. half-slot steps), each a little wider than one slot and
+/// as tall as the strip crop.
+func rewardTiles(crop: CGRect, imageWidth: Int, screenScaling s: Double, uiScale u: Double, rewardWidth w: Double) -> [CGRect] {
+    let slot = w / 4 * s * u
+    let tileWidth = slot + 30 * s * u
+    let centre = Double(imageWidth) / 2
+    return (-3...3).compactMap { k -> CGRect? in
+        let x = centre + Double(k) * slot / 2 - tileWidth / 2
+        let rect = CGRect(x: x.rounded(.down), y: crop.minY, width: tileWidth.rounded(.up), height: crop.height)
+            .intersection(crop)
+        return rect.isEmpty || rect.width < slot / 2 ? nil : rect
+    }
+}
+
+/// Lines from the strip plus the tiles. A tile line that touches the tile's
+/// left or right edge is cut, so it is dropped. Overlapping lines (the same
+/// text read twice) keep the longer text, then the higher confidence.
+func mergeTileLines(strip: [[String: Any]], tiles: [(CGRect, [[String: Any]])]) -> [[String: Any]] {
+    func box(_ line: [String: Any]) -> CGRect {
+        let b = line["box"] as? [String: Double] ?? [:]
+        return CGRect(x: b["x"] ?? 0, y: b["y"] ?? 0, width: b["width"] ?? 0, height: b["height"] ?? 0)
+    }
+    var candidates = strip
+    for (tile, found) in tiles {
+        let margin = 2.0
+        for line in found {
+            let r = box(line)
+            if r.minX <= tile.minX + margin || r.maxX >= tile.maxX - margin { continue }
+            candidates.append(line)
+        }
+    }
+    var kept: [[String: Any]] = []
+    for line in candidates {
+        let r = box(line)
+        let text = line["text"] as? String ?? ""
+        let confidence = line["confidence"] as? Double ?? 0
+        if let i = kept.firstIndex(where: { other in
+            let o = box(other)
+            let overlap = r.intersection(o)
+            let smaller = min(r.width * r.height, o.width * o.height)
+            return !overlap.isNull && smaller > 0 && overlap.width * overlap.height >= 0.5 * smaller
+        }) {
+            let otherText = kept[i]["text"] as? String ?? ""
+            let otherConfidence = kept[i]["confidence"] as? Double ?? 0
+            if text.count > otherText.count || (text.count == otherText.count && confidence > otherConfidence) {
+                kept[i] = line
+            }
+        } else {
+            kept.append(line)
+        }
+    }
+    // Same order as recognize: top to bottom (rows within half a line), then left to right.
+    return kept.sorted { p, q in
+        let a = box(p), b = box(q)
+        if abs(a.minY - b.minY) > min(a.height, b.height) / 2 { return a.minY < b.minY }
+        return a.minX < b.minX
+    }
+}
+
 func runRewards(_ raw: ArraySlice<String>) async throws {
     let args = try Arguments(raw, valueFlags: [
         "--display", "--window", "--file", "--reward-width", "--reward-height", "--reward-y", "--line-height",
@@ -574,7 +635,23 @@ func runRewards(_ raw: ArraySlice<String>) async throws {
     // The raw colour crop: no threshold, no colour filter.
     let strip = try cropImage(image, to: crop)
     let request = makeTextRequest(fast: fast, correction: correction, languages: languages, device: device)
-    let lines = try await recognize(strip, request: request, origin: crop.origin)
+    // Vision drops lines in a wide strip that it reads in a narrow crop (a
+    // wrapped "BLUEPRINT" under one card, squad names). With a known UI scale,
+    // the strip is also read as narrow tiles, one per position a card can take.
+    let tiles = a == b ? rewardTiles(crop: crop, imageWidth: image.width, screenScaling: s, uiScale: a, rewardWidth: w) : []
+    let regions = [crop] + tiles
+    let results = try await withThrowingTaskGroup(of: (Int, [[String: Any]]).self) { group -> [[[String: Any]]] in
+        for (index, region) in regions.enumerated() {
+            group.addTask {
+                let part = index == 0 ? strip : try cropImage(image, to: region)
+                return (index, try await recognize(part, request: request, origin: region.origin))
+            }
+        }
+        var ordered = [[[String: Any]]](repeating: [], count: regions.count)
+        for try await (index, found) in group { ordered[index] = found }
+        return ordered
+    }
+    let lines = mergeTileLines(strip: results[0], tiles: Array(zip(tiles, results.dropFirst())))
     let ocrMs = Date().timeIntervalSince(ocrBegin) * 1000
 
     var saved: Any = NSNull()
