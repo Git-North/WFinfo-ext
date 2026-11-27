@@ -611,6 +611,41 @@ export function denoRunner(): CommandRunner {
 }
 
 /* ------------------------------------------------------------------ */
+/* Who may see the lists                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The address of a client on another host, or null when the client is this
+ * host (a loopback address, or no TCP address at all) or when `allowRemote`
+ * (WFINFO_SCAN_REMOTE) accepts other hosts. The dashboard has no
+ * authentication, so this one rule guards both the scan run and the
+ * display/window lists, which carry the host's window titles.
+ */
+export function remoteClient(
+  remote: Deno.Addr | undefined,
+  allowRemote: boolean,
+): string | null {
+  if (allowRemote || remote === undefined || remote.transport !== "tcp") {
+    return null;
+  }
+  const host = remote.hostname;
+  const loopback = host === "::1" || host.startsWith("127.") ||
+    host.startsWith("::ffff:127.");
+  return loopback ? null : host;
+}
+
+/** What a client on another host gets instead of this host's lists. */
+export function withheldTargets(client: string): ScanTargets {
+  return {
+    displays: [],
+    windows: [],
+    notes: [
+      `The display and window lists are shown only on the machine that hosts the dashboard, and ${client} is another host. Set WFINFO_SCAN_REMOTE=1 to show them to other hosts.`,
+    ],
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Options and resolution                                              */
 /* ------------------------------------------------------------------ */
 

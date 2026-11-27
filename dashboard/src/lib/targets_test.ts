@@ -13,9 +13,11 @@ import {
   parseToken,
   parseToplevelNames,
   regionOf,
+  remoteClient,
   resolveCapture,
   type ScanTargets,
   toOptions,
+  withheldTargets,
 } from "./targets.ts";
 
 /** A stand-in host: file name + first argument → canned output. */
@@ -564,4 +566,40 @@ Deno.test("macOS discovery notes failed lists and hidden window titles", async (
   assertEquals(targets.notes.length, 2);
   assertStringIncludes(targets.notes[0], "exit code 2");
   assertStringIncludes(targets.notes[1], "Screen Recording");
+});
+
+const tcp = (hostname: string): Deno.Addr => ({
+  transport: "tcp",
+  hostname,
+  port: 50000,
+});
+
+Deno.test("only a loopback client counts as this host", () => {
+  assertEquals(remoteClient(tcp("127.0.0.1"), false), null);
+  assertEquals(remoteClient(tcp("127.4.5.6"), false), null);
+  assertEquals(remoteClient(tcp("::1"), false), null);
+  assertEquals(remoteClient(tcp("::ffff:127.0.0.1"), false), null);
+  assertEquals(remoteClient(undefined, false), null, "no address: in-process");
+  assertEquals(
+    remoteClient({ transport: "unix", path: "/tmp/wf.sock" }, false),
+    null,
+    "a unix socket is local",
+  );
+  assertEquals(remoteClient(tcp("192.168.1.50"), false), "192.168.1.50");
+  assertEquals(remoteClient(tcp("::ffff:10.0.0.2"), false), "::ffff:10.0.0.2");
+});
+
+Deno.test("WFINFO_SCAN_REMOTE lets another host through", () => {
+  assertEquals(remoteClient(tcp("192.168.1.50"), true), null);
+});
+
+Deno.test("another host gets no displays, no windows and a note", () => {
+  const withheld = withheldTargets("192.168.1.50");
+  const options = toOptions(withheld);
+
+  assertEquals(options.displays, []);
+  assertEquals(options.windows, []);
+  assertEquals(options.notes.length, 1);
+  assertStringIncludes(options.notes[0], "192.168.1.50 is another host");
+  assertStringIncludes(options.notes[0], "WFINFO_SCAN_REMOTE=1");
 });
