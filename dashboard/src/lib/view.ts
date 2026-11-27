@@ -567,6 +567,9 @@ ${targets.notes.map((n) => `    <li>${escapeHtml(n)}</li>`).join("\n")}
 (<code class="wf-code">WFInfo.Headless --scan</code>): which prime part to take
 for the best platinum return, every choice it recognised, and the capture it
 priced.</p>
+<p class="govuk-body">For a small window over the game (for example a pinned
+Steam overlay browser), open the <a class="govuk-link" href="/overlay">compact
+scan overlay</a>. It updates live.</p>
 <form id="wf-scan-form" class="wf-scan-form" method="post" action="/scan/run">
   <div class="govuk-form-group">
     <label class="govuk-label" for="wf-scan-display">Display</label>
