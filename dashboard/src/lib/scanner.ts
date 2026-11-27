@@ -33,6 +33,12 @@ export interface ScannerOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Process groups are a POSIX feature; on Windows `Deno.kill` refuses a
+ * negative pid, so there the scanner kills the direct child only.
+ */
+const GROUP_KILL = Deno.build.os !== "windows";
+
 /** POSIX single-quote a value for the shell command line. */
 function quoteArg(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -42,6 +48,7 @@ export class Scanner {
   readonly command: string;
   readonly timeoutMs: number;
   #running: Promise<ScanOutcome> | null = null;
+  #child: Deno.ChildProcess | null = null;
 
   constructor(options: ScannerOptions) {
     this.command = options.command.trim();
@@ -97,6 +104,9 @@ export class Scanner {
         stdin: "null",
         stdout: "piped",
         stderr: "piped",
+        // Own session and process group (setsid), so `#kill` reaches every
+        // process the command starts, not only `sh`.
+        detached: GROUP_KILL,
       }).spawn();
     } catch (err) {
       return outcome(
@@ -106,14 +116,11 @@ export class Scanner {
       );
     }
 
+    this.#child = child;
     let timedOut = false;
     const deadline = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The command already exited; there is nothing left to stop.
-      }
+      this.#kill(child);
     }, this.timeoutMs);
 
     try {
@@ -132,6 +139,29 @@ export class Scanner {
       );
     } finally {
       clearTimeout(deadline);
+      this.#child = null;
+    }
+  }
+
+  /**
+   * Kill the run in flight, if any, with everything it started. The server
+   * calls this on shutdown: the run has its own process group, so a Ctrl-C in
+   * the terminal no longer reaches it.
+   */
+  stop(): void {
+    if (this.#child !== null) this.#kill(this.#child);
+  }
+
+  #kill(child: Deno.ChildProcess): void {
+    try {
+      // A negative pid signals the whole group. The output pipes close only
+      // when the last process that holds them exits, so killing `sh` alone
+      // (dash forks even a single command; `nix run` starts `dotnet`) leaves
+      // `output()` waiting for the orphans.
+      if (GROUP_KILL) Deno.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch {
+      // The group already exited; there is nothing left to stop.
     }
   }
 }

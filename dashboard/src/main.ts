@@ -795,6 +795,17 @@ if (import.meta.main) {
   console.log(`Warframe Info dashboard`);
   console.log(`  data dir:  ${APP_DIR}`);
   await warmGovuk();
+  // On POSIX a scan runs in its own session and process group (scanner.ts),
+  // out of reach of the terminal's Ctrl-C and hang-up: kill it before the
+  // server goes. `Deno.exit` fires `unload`. On Windows the scan stays in the
+  // console's group, so the console's Ctrl-C still reaches it.
+  globalThis.addEventListener("unload", () => scanner.stop());
+  if (Deno.build.os !== "windows") {
+    const exitCodes = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 } as const;
+    for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"] as const) {
+      Deno.addSignalListener(signal, () => Deno.exit(exitCodes[signal]));
+    }
+  }
   try {
     // A bind failure (the port belongs to another process) is thrown here, so
     // this is where the operator gets told which port is taken. Deno prints
