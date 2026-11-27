@@ -53,7 +53,7 @@ and reports the outcome. It is an "independent digital service" (see
   (no npm imports at runtime).
 - `src/lib/view.ts` — GOV.UK page templates and bespoke `wf-` styles wiring.
 - `src/static/` — `app.css` (bespoke `wf-` classes), `dashboard.js` (log
-  events with a polling fallback, `/scan` polling, filter and the scan-button
+  and scan events with a polling fallback, filter and the scan-button
   submit, progressive enhancement),
   `warframe-info-logo.webp` (brand asset).
 - `src/lib/*_test.ts` + `src/lib/testutil.ts` — offline unit tests.
