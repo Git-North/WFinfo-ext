@@ -47,9 +47,13 @@ import Vision
 
 // MARK: - Output helpers
 
+/// A failure; with a catalog code (errors/catalog.json) it prints as
+/// "[CAP-001] message", which MacHelper.cs reads back. Usage errors have no code.
 struct Failure: Error, CustomStringConvertible {
     let description: String
-    init(_ text: String) { description = text }
+    init(_ text: String, code: String? = nil) {
+        description = code.map { "[\($0)] \(text)" } ?? text
+    }
 }
 
 func printJSON(_ value: Any) {
@@ -180,7 +184,9 @@ func loadImage(_ path: String) throws -> CGImage {
     if path == "-" {
         data = FileHandle.standardInput.readDataToEndOfFile()
     } else {
-        guard let bytes = FileManager.default.contents(atPath: path) else { throw Failure("cannot read \(path)") }
+        guard let bytes = FileManager.default.contents(atPath: path) else {
+            throw Failure("cannot read \(path)", code: "CAP-005")
+        }
         data = bytes
     }
     return try decodeImage(data, label: path)
@@ -189,7 +195,7 @@ func loadImage(_ path: String) throws -> CGImage {
 func decodeImage(_ data: Data, label: String) throws -> CGImage {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil),
           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-        throw Failure("not an image: \(label)")
+        throw Failure("not an image: \(label)", code: "CAP-005")
     }
     return image
 }
@@ -214,7 +220,12 @@ func readFrames() throws -> [Data] {
 /// Recognized lines top to bottom, left to right, with pixel boxes (top-left origin).
 /// `origin` is added to every box: pass a crop's origin to get full-image coordinates.
 func recognize(_ image: CGImage, request: RecognizeTextRequest, origin: CGPoint = .zero) async throws -> [[String: Any]] {
-    let observations = try await request.perform(on: image)
+    let observations: [RecognizedTextObservation]
+    do {
+        observations = try await request.perform(on: image)
+    } catch {
+        throw Failure("text recognition failed: \(error)", code: "OCR-001")
+    }
     let size = CGSize(width: image.width, height: image.height)
     let lines = observations.compactMap { observation -> (CGRect, RecognizedText)? in
         guard let best = observation.topCandidates(1).first else { return nil }
@@ -431,12 +442,12 @@ func captureTarget(display displayText: String?, window windowText: String?) asy
     do {
         content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
     } catch {
-        throw Failure("screen capture is not allowed (\(error.localizedDescription)). Grant Screen Recording to the app that started this command in System Settings > Privacy & Security > Screen & System Audio Recording, then restart that app.")
+        throw Failure("screen capture is not allowed (\(error.localizedDescription)). Grant Screen Recording to the app that started this command in System Settings > Privacy & Security > Screen & System Audio Recording, then restart that app.", code: "CAP-001")
     }
 
     if let windowText {
         guard let id = UInt32(windowText), let window = content.windows.first(where: { $0.windowID == id }) else {
-            throw Failure("window \(windowText) is not on screen")
+            throw Failure("window \(windowText) is not on screen", code: "CAP-003")
         }
         return CaptureTarget(
             filter: SCContentFilter(desktopIndependentWindow: window),
@@ -450,7 +461,7 @@ func captureTarget(display displayText: String?, window windowText: String?) asy
     } else {
         display = content.displays.first { $0.displayID == CGMainDisplayID() } ?? content.displays.first
     }
-    guard let display else { throw Failure("display \(displayText ?? "main") is not connected") }
+    guard let display else { throw Failure("display \(displayText ?? "main") is not connected", code: "CAP-002") }
     return CaptureTarget(
         filter: SCContentFilter(display: display, excludingWindows: []),
         label: "display \(display.displayID)",
@@ -466,8 +477,12 @@ func captureImage(_ filter: SCContentFilter) async throws -> (CGImage, CGFloat) 
     config.showsCursor = false
     config.ignoreShadowsSingleWindow = true
     config.captureResolution = .best
-    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-    return (image, scale)
+    do {
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        return (image, scale)
+    } catch {
+        throw Failure("the capture produced no image (\(error.localizedDescription))", code: "CAP-004")
+    }
 }
 
 func runCapture(_ raw: ArraySlice<String>) async throws {

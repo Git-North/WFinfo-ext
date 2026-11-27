@@ -35,6 +35,9 @@ and reports the outcome. It is an "independent digital service" (see
 - `src/lib/fsdata.ts` — app-data dir resolution (mirrors headless
   `ConfigureEnvironment`), `debug.log` tail/parse helpers, OCR suite-result
   parsing.
+- `src/lib/errors.ts` — the error catalog (`errors/catalog.json`, a JSON
+  import): `lookup`, `generated` (GEN- codes, same rule as the runner) and
+  `errorBlockHtml(code, detail, crashReport)` (GOV.UK inset, escaped).
 - `src/lib/scan.ts` — scan-record parsing: `parseScanResult` for the
   `scans/latest.json` contract (`OcrEngine` is optional: old records have
   none), plus best-choice resolution with the contract
@@ -69,6 +72,12 @@ and reports the outcome. It is an "independent digital service" (see
   On macOS the app dir is always `~/Library/Application Support/WFInfo`
   (.NET ignores the override there), so tests that need a fake app dir set
   `HOME` too.
+- Error display: the scan body shows a record's error with
+  `errorBlockHtml` (code, name, title, description, what to do, crash
+  report). The dashboard's own failures carry a code in the JSON (`code`)
+  and the HTML error page: DSH-001 (scan command not started), SCN-002
+  (409, a scan is running), SCN-003 (timeout); the request catch-all shows
+  a generated GEN- code. Take codes only from `errors/catalog.json`.
 - Pages use GOV.UK Frontend classes only; bespoke styles are prefixed `wf-`.
 - All user/file-derived text is HTML-escaped before interpolation
   (`src/lib/html.ts`).

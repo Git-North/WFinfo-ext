@@ -5,6 +5,7 @@
  * footer. Bespoke styles live in /assets/app.css and are prefixed `wf-`.
  */
 
+import { errorBlockHtml, type ErrorEntry } from "./errors.ts";
 import { escapeHtml } from "./html.ts";
 import type { CatalogItem } from "./items.ts";
 import { wfmItemUrl } from "./items.ts";
@@ -397,6 +398,10 @@ export interface ScanView {
     entries: number;
   };
   error: string | null;
+  /** Catalog code of `error` (errors/catalog.json); null or absent when none. */
+  errorCode?: string | null;
+  /** Crash report of the scan (~/-relative path); null or absent when none. */
+  crashReport?: string | null;
 }
 
 export interface ScanPageState {
@@ -459,11 +464,13 @@ export function scanBodyHtml(state: ScanPageState): string {
   const cacheValue =
     `${cache.hits} cached · ${cache.fetched} fetched · ${cache.failed} failed · ${cache.entries} entries`;
 
-  const errorBlock = scan.error === null ? "" : `<div class="govuk-inset-text">
-  <p class="govuk-body wf-err wf-!-no-margin-bottom">Scan error: ${
-    escapeHtml(scan.error)
-  }</p>
-</div>`;
+  const errorBlock = scan.error === null && !scan.errorCode
+    ? ""
+    : errorBlockHtml(
+      scan.errorCode,
+      scan.error,
+      scan.crashReport ?? null,
+    );
 
   const noChoices = scan.choices.length > 0
     ? ""
@@ -809,10 +816,16 @@ export function notFoundPageHtml(): string {
   return shell("Page not found", "logs", content);
 }
 
-export function errorPageHtml(message: string): string {
+/** The failure page; with a catalog `code`, the error block follows the message. */
+export function errorPageHtml(
+  message: string,
+  code?: string | ErrorEntry,
+): string {
   const content = `
 <h1 class="govuk-heading-xl">Something went wrong</h1>
-<p class="govuk-body">${escapeHtml(message)}</p>
+<p class="govuk-body">${escapeHtml(message)}</p>${
+    code ? "\n" + errorBlockHtml(code, null) : ""
+  }
 <p class="govuk-body"><a class="govuk-link" href="/logs">Return to Logs</a>.</p>`;
   return shell("Something went wrong", "logs", content);
 }

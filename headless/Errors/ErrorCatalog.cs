@@ -54,6 +54,13 @@ namespace WFInfo.Errors
 
         public string Code { get; }
         public string Detail { get; }
+
+        /// <summary>
+        /// The name another component gave with its code (for example the
+        /// overlay crate's PLG- names), used when this catalog has no entry.
+        /// </summary>
+        public string ReportedName { get; init; }
+
         public ErrorInfo Info => ErrorCatalog.Get(Code);
 
         private static string BuildMessage(string code, string detail)
@@ -87,14 +94,33 @@ namespace WFInfo.Errors
 
         /// <summary>
         /// The error for an exception: its catalog entry when it is a
-        /// <see cref="ScanFailure"/> with a known code, else a generated
-        /// GEN- entry from the exception type and its throwing site.
+        /// <see cref="ScanFailure"/> with a known code; for a well-formed code
+        /// this catalog does not list (another component's), an entry that
+        /// keeps that code; for a missing native library, its SYS- entry
+        /// (<see cref="ErrorMapping.FromNative"/>); else a generated GEN- entry
+        /// from the exception type and its throwing site.
         /// </summary>
         public static ErrorInfo ForException(Exception error)
         {
-            if (error is ScanFailure failure && Get(failure.Code) is ErrorInfo known) return known;
+            if (error is ScanFailure failure)
+            {
+                if (Get(failure.Code) is ErrorInfo known) return known;
+                if (ErrorMapping.IsCode(failure.Code)) return Unlisted(failure);
+            }
+            if (ErrorMapping.FromNative(error) is ScanFailure native && Get(native.Code) is ErrorInfo library) return library;
             string input = (error?.GetType().FullName ?? "null") + "|" + Site(error);
             return Generated(input);
+        }
+
+        /// <summary>An entry for a code that this build's catalog does not list.</summary>
+        private static ErrorInfo Unlisted(ScanFailure failure)
+        {
+            string code = failure.Code;
+            string name = string.IsNullOrWhiteSpace(failure.ReportedName) ? "Unlisted" : failure.ReportedName.Trim();
+            return new ErrorInfo(code, name, code.Substring(0, 3), "error", "Error not in this catalog",
+                "A component reported " + code + ", which this build's error catalog does not list.",
+                "Update WFInfo-ext. If it repeats, report the code with the crash report in crash-reports/.",
+                generated: false);
         }
 
         /// <summary>A generated entry for an input text (the rule and test vectors are in the catalog).</summary>

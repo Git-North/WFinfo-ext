@@ -349,6 +349,30 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
 - A scan with no reward screen on screen still writes a record with
   `Choices: []` (`Error: null`); a capture or database failure sets `Error`.
 
+## Errors and crash reports
+
+Every failure has a code from `errors/catalog.json` (see `errors/AGENTS.md`).
+The runner prints it on stderr and exits 2:
+
+```text
+ERROR SYS-004 Keystone: Helper path is wrong — WFINFO_MAC_HELPER names a file that does not exist.
+  Detail: WFINFO_MAC_HELPER names a missing file: '/nonexistent'
+  What to do: Fix the path in WFINFO_MAC_HELPER, or unset it to use the helper next to the runner.
+```
+
+- A known failure prints the code only. An unexpected error gets a generated
+  code (`GEN-xxxxxx` plus a name, the same code for the same bug) and a crash
+  report: `<app dir>/crash-reports/crash-<yyyy-MM-dd_HH.mm.ss>-<component>.txt`.
+  The line names the report. The newest 20 reports are kept.
+- A report has no personal data: home paths are `~`, and e-mail addresses,
+  IP addresses and EE.log lines are removed.
+- `wfinfo-mac` prints `wfinfo-mac: [CAP-001] <message>` on stderr; the runner
+  reads the code back. Usage errors have no code.
+- The reward layout library answers `{"error": {"code": "LAY-001", "message": "..."}}`.
+- `WFINFO_FAULT=crash` (developer hook) makes the runner fail on purpose, to
+  check the crash report. Set `HOME` and `CFFIXED_USER_HOME` to a temp root
+  first, so the report does not go into the real app dir.
+
 ## Environment
 
 - `WFINFO_NATIVE_LIBS` — directory containing `libtesseract50.so` and

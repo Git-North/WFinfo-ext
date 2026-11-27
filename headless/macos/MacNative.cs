@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Tesseract;
+using WFInfo.Errors;
 
 namespace WFInfo.MacOS
 {
@@ -37,7 +38,8 @@ namespace WFInfo.MacOS
         /// self-check). System.Drawing.Common probes "libgdiplus.dylib" in the
         /// runtime dir, its own assembly dir, then by bare name; dyld never
         /// searches the Homebrew prefix, so a link goes in the assembly dir.
-        /// Returns false (with a message) when libgdiplus is not installed.
+        /// Returns false (with the SYS-006 error line) when libgdiplus is not
+        /// installed or cannot be linked.
         /// </summary>
         public static bool EnableGdiPlus()
         {
@@ -46,9 +48,7 @@ namespace WFInfo.MacOS
             string brew = FindLibraryDir("libgdiplus.dylib");
             if (brew == null)
             {
-                Console.Error.WriteLine(
-                    "ERROR: this mode needs libgdiplus (System.Drawing); `brew install mono-libgdiplus`. " +
-                    "The normal scan and --selfcheck do not need it.");
+                ErrorConsole.Print("SYS-006", "libgdiplus.dylib is not in " + string.Join(" or ", LibraryDirs));
                 return false;
             }
 
@@ -61,7 +61,7 @@ namespace WFInfo.MacOS
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"ERROR: cannot link libgdiplus into {drawingDir}: {ex.Message}");
+                ErrorConsole.Print("SYS-006", $"cannot link libgdiplus into {drawingDir}: {ex.Message}");
                 return false;
             }
         }
@@ -79,8 +79,8 @@ namespace WFInfo.MacOS
             string farm = TesseractFarm();
             if (farm == null)
             {
-                Console.Error.WriteLine(
-                    "WARNING: Tesseract is not installed; `brew install tesseract` to use --ocr tesseract or the OCR suite.");
+                // The run goes on: the engine start then fails and maps to SYS-007 too.
+                ErrorConsole.Print("SYS-007", "Homebrew's libtesseract.5 and libleptonica.6 were not found");
                 return;
             }
             Environment.SetEnvironmentVariable("WFINFO_NATIVE_LIBS", farm);

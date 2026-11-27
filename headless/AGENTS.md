@@ -87,6 +87,12 @@ code type-checks without WPF/WinForms/Win32.
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
   `PlatformTypeShims.cs` (Point/Key/MouseButton/Screen/Clipboard),
   `BitmapPixInterop.cs` (Bitmap → Pix via lossless PNG round-trip).
+- `Errors/` — the error contract (codes from `errors/catalog.json`):
+  `ErrorCatalog.cs` (lookup, generated GEN- codes, `ScanFailure`),
+  `ErrorMapping.cs` (codes from helper text, any component's JSON error
+  object, missing native libraries), `ErrorConsole.cs` (the stderr line,
+  `Fail` for a mode), `CrashReport.cs` (crash reports), `Redact.cs` (the
+  personal-data scrub), `AssemblyInfo.cs` (internals for the dev tests).
 - `flake.nix` (repo root) owns the build environment, not this folder.
 
 ## Local Contracts
@@ -200,6 +206,29 @@ code type-checks without WPF/WinForms/Win32.
   the Homebrew prefix) for the developer modes only.
 - `System.Drawing.Common` is pinned to 6.0.0: versions ≥ 7 throw
   PlatformNotSupportedException on Linux even with `EnableUnixSupport`.
+- Error contract (binding):
+  - Throw `ScanFailure(code, detail)` where the cause is known; the detail
+    holds no personal data. Never throw a bare exception for a known cause.
+  - A mode prints a failure with `ErrorConsole.Fail(ex, component)`:
+    `ERROR <code> <name>: <title> — <description> (crash report: <path>)`,
+    then `Detail:` and `What to do:`, exit 2. A catalog code gets no crash
+    report; anything else gets a GEN- code and a crash report. The top-level
+    guard in `Main` reports every escaped exception with a crash report.
+  - Catalog severity sets the word: `WARNING` for warning/info, else `ERROR`.
+    DAT-001/DAT-003 (market_items/name_data missing or unreadable) stop the
+    scan; DAT-002 (market_data) is a warning.
+  - `wfinfo-mac` failures print `wfinfo-mac: [<CODE>] <message>` (CAP-001..005,
+    OCR-001); `MacHelper` throws a `ScanFailure` with that code. Usage errors
+    have no code and stay an `InvalidOperationException`. `MacHelper` itself
+    throws SYS-001 (not built / cannot start), SYS-002 (timeout), SYS-003 (no
+    JSON), SYS-004 (bad `WFINFO_MAC_HELPER`).
+  - The layout library answers `{"error":{"code":"LAY-001"|"LAY-002","message":…}}`.
+    Read any component's error object with `ErrorMapping.FromJson`; it keeps
+    a well-formed code that the catalog does not list (e.g. PLG-).
+  - Crash reports go only to `<app dir>/crash-reports/` (newest 20). A test or
+    script that runs the runner sets `HOME` and `CFFIXED_USER_HOME` (Linux:
+    `WFINFO_DATA_DIR`) to a temp root and refuses the real app dir.
+    `WFINFO_FAULT=crash` is the developer hook for a forced crash.
 - Env vars honored by `Program.cs`:
   - `WFINFO_NATIVE_LIBS` — dir with tesseract/leptonica libs (flake sets it).
   - `WFINFO_DATA_DIR` — overrides the app-data root (tessdata + market DBs).
