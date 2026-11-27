@@ -10,7 +10,11 @@
 //!   `rewardY` and `lineHeight` (WFInfo's OCR constants). The output has
 //!   `uiScale`, `uiScaleEstimated`, `screenScaling`, `rowTop`, `rowBottom`,
 //!   `slots[]` (`centerX`, `gridX`, `lines`, `candidates`, `otherLines`),
-//!   `notes` and `scaleScores`; on bad input it is `{"error": "..."}`.
+//!   `notes` and `scaleScores`. On failure it is
+//!   `{"error": {"code": "LAY-001" | "LAY-002", "message": "..."}}` (codes in
+//!   errors/catalog.json): LAY-001 when `helper` is missing, null, not an
+//!   object, or lacks `width`, `height` or `lines`; LAY-002 for anything else
+//!   (bad JSON, missing constants, non-UTF-8 or null input, a caught panic).
 //! - `wfinfo_layout_free(char *)`: frees a string `wfinfo_layout` returned.
 
 mod dotnet;
@@ -71,15 +75,51 @@ fn result_json(r: &RewardLayoutResult<'_>) -> Value {
     })
 }
 
-fn error_json(message: &str) -> String {
-    json!({ "error": message }).to_string()
+/// Catalog code: the helper answer is missing or has no fields to lay out.
+pub const INPUT_INVALID: &str = "LAY-001";
+/// Catalog code: any other layout failure.
+pub const LAYOUT_FAILED: &str = "LAY-002";
+
+fn error_json(code: &str, message: &str) -> String {
+    json!({ "error": { "code": code, "message": message } }).to_string()
+}
+
+/// Why `helper` cannot be laid out, or `None` when it has the needed fields.
+/// Present fields with odd values (a negative width) are not an error: the
+/// layout answers them with a note, as the C# version did.
+fn helper_problem(helper: Option<&Value>) -> Option<String> {
+    let object = match helper {
+        None => return Some("no helper answer in the input".to_string()),
+        Some(Value::Null) => return Some("the helper answer is null".to_string()),
+        Some(Value::Object(object)) => object,
+        Some(_) => return Some("the helper answer is not a JSON object".to_string()),
+    };
+    let missing: Vec<&str> = ["width", "height", "lines"]
+        .into_iter()
+        .filter(|key| !object.contains_key(*key))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut message = format!("the helper answer has no {}", missing.join(", "));
+    if let Some(error) = object.get("error").and_then(Value::as_str) {
+        message.push_str(&format!(" (helper error: {error})"));
+    }
+    Some(message)
 }
 
 /// The whole step on UTF-8 JSON text: the C ABI is a thin shell around this.
 pub fn layout_json(input: &str) -> String {
-    let input: Input = match serde_json::from_str(input) {
+    let value: Value = match serde_json::from_str(input) {
+        Ok(value) => value,
+        Err(e) => return error_json(LAYOUT_FAILED, &format!("bad input: {e}")),
+    };
+    if let Some(problem) = helper_problem(value.get("helper")) {
+        return error_json(INPUT_INVALID, &problem);
+    }
+    let input: Input = match serde_json::from_value(value) {
         Ok(input) => input,
-        Err(e) => return error_json(&format!("bad input: {e}")),
+        Err(e) => return error_json(LAYOUT_FAILED, &format!("bad input: {e}")),
     };
     let lines = parse_lines(input.helper.get("lines"));
     let result = analyze(
@@ -108,16 +148,16 @@ fn into_c_string(text: String) -> *mut c_char {
 pub unsafe extern "C" fn wfinfo_layout(json: *const c_char) -> *mut c_char {
     let answer = catch_unwind(|| {
         if json.is_null() {
-            return error_json("null input");
+            return error_json(LAYOUT_FAILED, "null input");
         }
         // SAFETY: the caller promises a valid NUL-terminated string (see above).
         let bytes = unsafe { CStr::from_ptr(json) }.to_bytes();
         match std::str::from_utf8(bytes) {
             Ok(text) => layout_json(text),
-            Err(_) => error_json("input is not UTF-8"),
+            Err(_) => error_json(LAYOUT_FAILED, "input is not UTF-8"),
         }
     })
-    .unwrap_or_else(|_| error_json("internal error"));
+    .unwrap_or_else(|_| error_json(LAYOUT_FAILED, "internal error (panic)"));
     into_c_string(answer)
 }
 

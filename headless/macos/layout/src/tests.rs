@@ -364,28 +364,40 @@ fn case_h_five_columns_keep_the_four_that_fit_the_grid() {
 
 // ---- C ABI and bad input ------------------------------------------------------
 
-#[test]
-fn bad_input_gives_an_error_object() {
-    for text in ["", "not json", "{}", "[1]", r#"{"rewardWidth":"x"}"#] {
-        let out: Value = serde_json::from_str(&layout_json(text)).expect("JSON out");
-        assert!(out["error"].is_string(), "input {text:?}");
-    }
+fn error_code(out: &Value) -> Option<&str> {
+    assert!(out["error"]["message"].is_string(), "{out}");
+    out["error"]["code"].as_str()
 }
 
 #[test]
-fn helper_without_size_gives_a_note_and_no_slots() {
+fn bad_input_gives_an_error_object() {
+    let consts = r#""rewardWidth":968,"rewardHeight":235,"rewardY":316,"lineHeight":48"#;
+    let helper = r#""helper":{"width":1920,"height":1080,"lines":[]}"#;
+    for text in [
+        String::new(),
+        "not json".to_string(),
+        format!("{{{helper}}}"),
+        format!(
+            r#"{{{helper},"rewardWidth":"x","rewardHeight":235,"rewardY":316,"lineHeight":48}}"#
+        ),
+    ] {
+        let out: Value = serde_json::from_str(&layout_json(&text)).expect("JSON out");
+        assert_eq!(error_code(&out), Some(LAYOUT_FAILED), "input {text:?}");
+    }
+    let ok = format!("{{{helper},{consts}}}");
+    let out: Value = serde_json::from_str(&layout_json(&ok)).expect("JSON out");
+    assert!(out.get("error").is_none(), "{out}");
+}
+
+#[test]
+fn helper_without_fields_gives_lay_001() {
     let input = json!({"helper": {"error": "no display"}, "rewardWidth": 968, "rewardHeight": 235,
         "rewardY": 316, "lineHeight": 48});
     let out: Value = serde_json::from_str(&layout_json(&input.to_string())).expect("JSON out");
-    assert_eq!(out["slots"].as_array().map(Vec::len), Some(0));
-    assert_eq!(out["uiScale"].as_f64(), Some(1.0));
-    assert_eq!(out["uiScaleEstimated"], Value::Bool(true));
+    assert_eq!(error_code(&out), Some(INPUT_INVALID));
     assert_eq!(
-        notes(&out),
-        [
-            "helper error: no display",
-            "no image size in the helper JSON"
-        ]
+        out["error"]["message"],
+        "the helper answer has no width, height, lines (helper error: no display)"
     );
 }
 
@@ -470,8 +482,8 @@ fn answers_equal_the_recorded_csharp_answers() {
 }
 
 /// Sonar S2259 on the C# version: `helperJson` can be null. Here a missing,
-/// null or non-object `helper` must never panic: the answer is the C# one for
-/// a helper with no image size (a note, no slots, the scale nearest 1.0).
+/// null, non-object or field-less `helper` must never panic: the answer is an
+/// explicit LAY-001 error object.
 #[test]
 fn null_or_odd_helper_is_handled_without_a_crash() {
     let consts = r#""rewardWidth":968,"rewardHeight":235,"rewardY":316,"lineHeight":48"#;
@@ -485,9 +497,30 @@ fn null_or_odd_helper_is_handled_without_a_crash() {
     ] {
         let text = format!("{{{helper}{consts}}}");
         let out: Value = serde_json::from_str(&layout_json(&text)).expect("JSON out");
-        assert!(out.get("error").is_none(), "{text}");
-        assert_eq!(out["slots"].as_array().map(Vec::len), Some(0), "{text}");
-        assert_eq!(notes(&out), ["no image size in the helper JSON"], "{text}");
-        assert_eq!(out["uiScale"].as_f64(), Some(1.0), "{text}");
+        assert_eq!(error_code(&out), Some(INPUT_INVALID), "{text}");
     }
+}
+
+/// A helper with all fields but odd values keeps the C# answer: a note, no slots.
+#[test]
+fn helper_with_odd_size_gives_a_note_and_no_slots() {
+    let input = json!({"helper": {"width": -5, "height": 1080, "lines": []}, "rewardWidth": 968,
+        "rewardHeight": 235, "rewardY": 316, "lineHeight": 48});
+    let out: Value = serde_json::from_str(&layout_json(&input.to_string())).expect("JSON out");
+    assert!(out.get("error").is_none(), "{out}");
+    assert_eq!(out["slots"].as_array().map(Vec::len), Some(0));
+    assert_eq!(notes(&out), ["no image size in the helper JSON"]);
+}
+
+#[test]
+fn c_abi_null_input_gives_lay_002() {
+    // SAFETY: null is allowed; the answer is freed once.
+    let text = unsafe {
+        let p = wfinfo_layout(ptr::null());
+        let s = CStr::from_ptr(p).to_str().expect("UTF-8").to_string();
+        wfinfo_layout_free(p);
+        s
+    };
+    let out: Value = serde_json::from_str(&text).expect("JSON out");
+    assert_eq!(error_code(&out), Some(LAYOUT_FAILED));
 }
