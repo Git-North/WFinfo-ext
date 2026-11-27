@@ -25,7 +25,9 @@ The runner builds on macOS with Homebrew's .NET, and a small Swift helper,
 `wfinfo-mac`, gives it Apple's Vision framework (the Swift
 `RecognizeTextRequest` API, accurate mode; Vision can run it on the Neural
 Engine) and ScreenCaptureKit. The helper needs macOS 15 or later.
-`--selfcheck` reads its sample with Vision and loads no libgdiplus.
+`--selfcheck` reads its sample with Vision and loads no libgdiplus. It proves
+the Vision stack only: it does not run WFInfo's own pipeline (tessdata,
+System.Drawing). `--selfcheck --ocr tesseract` checks that pipeline.
 
 WFInfo's own pipeline (`--test`, `--theme-test`, `--scan`, `--selfcheck --ocr
 tesseract`) runs on `System.Drawing` and Tesseract, so on macOS it needs
@@ -67,7 +69,7 @@ The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 | `wfinfo-mac devices` | compute devices Vision offers for text recognition |
 | `wfinfo-mac displays` / `windows` | displays and on-screen windows (ids for the helper's `--display`/`--window`) |
 | `wfinfo-mac capture [--display <id> \| --window <id>] <out.png> \| -` | one ScreenCaptureKit screenshot; `-` writes the PNG to stdout |
-| `wfinfo-mac rewards [--display\|--window\|--file] --reward-width 968 --reward-height 235 --reward-y 316 --line-height 48 --ui-scale <u> [--save <png>]` | capture (or read), crop the reward-name rows, read them with Vision; lines with full-image boxes as JSON |
+| `wfinfo-mac rewards [--display\|--window\|--file] --reward-width 968 --reward-height 235 --reward-y 316 --line-height 48 --ui-scale <u> [--save <png>]` | capture (or read), crop the reward-name rows, read them with Vision; every line in the crop with full-image boxes as JSON |
 | `wfinfo-mac selfcheck` | render "Volt Prime Blueprint" with CoreText and read it |
 | `wfinfo-mac synth --out <png> --names "A\|B" [--ui-scale u] [--color #hex] [--squad "p1\|p2"]` | synthetic reward screen for tests |
 | `wfinfo-mac hotkey [--key ctrl+option+s] [--url <scan url>]` | global hotkey that starts a dashboard scan |
@@ -75,6 +77,10 @@ The helper `headless/bin/Debug/net9.0/wfinfo-mac` also works alone:
 The helper takes `--display`/`--window`. The runner's `--scan` does not take
 these ids: its `--output` and `--region` name grim/wlr-randr outputs and
 layout geometry (Linux).
+
+`rewards` returns every line it reads in the crop, also text that is not a
+reward name (for example squad names). The crop is generous on purpose. The
+caller keeps only the lines inside the name rows.
 
 `hotkey` uses a Carbon hotkey, so it needs no Accessibility permission. Run it
 next to the dashboard:
@@ -88,7 +94,7 @@ fragment.
 |---|---|
 | `--test <map.json> [out.json]` (or plain `<map.json>`) | OCR regression suite |
 | `--theme-test <folder> [uiScale]` (`--theme-debug` also works) | theme detection over PNGs |
-| `--selfcheck [--ocr <engine>]` | renders sample text and OCRs it — verifies natives + tessdata/Vision + imaging |
+| `--selfcheck [--ocr <engine>]` | renders sample text and OCRs it — Tesseract: natives + tessdata + imaging; Vision (macOS default): the helper and Vision only |
 | `--scan [options]` | reward-screen scan: capture, OCR, price, notify, record |
 | `--scan --watch` | scan automatically on every reward screen (EE.log), until stopped |
 
@@ -258,6 +264,8 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   `libleptonica-1.82.0.so` (set by `nix develop`; override for other distros).
 - `WFINFO_DATA_DIR` — application-data root override. tessdata and the market
   databases are stored under `<data dir>/WFInfo` (default: OS XDG config dir).
+  No effect on macOS (the runner warns): .NET does not read `XDG_CONFIG_HOME`
+  there.
 - `WFINFO_EE_LOG` — path to Warframe's `EE.log` for `--watch`; overrides the
   Steam/Proton prefix search (same as `--log`).
 - `WFINFO_OCR_ENGINE` — default for `--selfcheck --ocr`: `auto` (Vision on

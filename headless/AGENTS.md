@@ -73,6 +73,10 @@ code type-checks without WPF/WinForms/Win32.
 - The macOS port changes NO shared WFInfo file (`WFInfo/` stays upstream's).
   macOS code lives in `macos/` or behind runtime checks
   (`OperatingSystem.IsMacOS()`), never `#if`.
+- `wfinfo-mac rewards` returns every line in its generous crop (squad names
+  too), with full-image boxes; the caller drops lines outside the name rows.
+- On macOS the default `--selfcheck` proves the Vision stack only, not
+  WFInfo's pipeline; `--selfcheck --ocr tesseract` checks that pipeline.
 - On macOS `--selfcheck` never loads libgdiplus: the helper renders the sample
   with CoreText and reads it with Vision, so no `Bitmap`, `Graphics` or
   `Image` runs in .NET. Only the modes that run WFInfo's own System.Drawing
