@@ -218,7 +218,8 @@ filtered to the log's name, so a log that the game replaces is still seen. A
 backup check every 3 s catches missed events. If the watcher fails (for
 example, the Linux inotify watch limit), the watch checks every 250 ms and
 tries the watcher again every 10 s. Measured delay from the log line to the
-trigger: about 28 ms on macOS.
+trigger: about 28 ms on macOS (FSEvents) and 6–17 ms on Linux (inotify); the
+earlier 250 ms poll took about 208 ms on Linux.
 
 ### Game access
 
