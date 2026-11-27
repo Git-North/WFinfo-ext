@@ -50,6 +50,12 @@ code type-checks without WPF/WinForms/Win32.
   `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS only
   (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target `PublishMacHelper`
   copies it into the `dotnet publish` folder, also on macOS only.
+  The helper MUST build with
+  the macOS 15 SDK (Xcode 16) as well as newer ones: code that needs a newer
+  SDK goes behind `#if compiler(>=6.2)` (Xcode 26) with a working fallback.
+  Today that is only compute-device pinning
+  (`RecognizeTextRequest.supportedComputeStageDevices`/`setComputeDevice`);
+  everything else the helper uses is macOS 14/15 API.
 - `Platform/` — seams ONLY: `HeadlessMain.cs` (stub `Main`), `HeadlessServices.cs`
   (window-info service, process finder, screenshot/log-capture stubs,
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
@@ -121,6 +127,7 @@ code type-checks without WPF/WinForms/Win32.
   - `WFINFO_OCR_ENGINE` — default `--selfcheck --ocr` (auto, vision,
     tesseract).
   - `WFINFO_VISION_DEVICE` — Vision compute device (auto, ane, gpu, cpu).
+    Pinning needs the macOS 26 SDK (Xcode 26); see the Swift build rule.
   - `WFINFO_MAC_HELPER` — path of `wfinfo-mac` (default: next to the runner).
     Trimmed; blank counts as unset. On macOS a missing file is an error
     (`OcrEngines.Resolve` throws), never a silent fall back to Tesseract.

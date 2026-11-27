@@ -244,7 +244,10 @@ the dashboard's Scan page; `dashboard/src/lib/scan.ts` parses it.
   "Error": null
 }
 ```
-
+  Pinning needs a helper built with Xcode 26 or later (the macOS 26 SDK). A
+  helper built with Xcode 16 (the macOS 15 SDK) builds and runs, uses Vision's
+  automatic device, and prints a note for `--device ane|gpu|cpu`;
+  `wfinfo-mac devices` then reports `"canPinComputeDevice": false`.
 - Keys are always present; numbers are `null` when unknown.
 - `Choices[]` is in screen order, `Index` starts at 1; `Part` is the
   OCR-corrected market name, `Slug` the warframe.market `url_name`.

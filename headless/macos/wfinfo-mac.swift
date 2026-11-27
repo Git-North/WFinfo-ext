@@ -94,8 +94,28 @@ struct Arguments {
 
 // MARK: - OCR
 
+/// Pinning Vision's compute device (RecognizeTextRequest.supportedComputeStageDevices
+/// and setComputeDevice) needs the macOS 26 SDK (Xcode 26, Swift 6.2). The
+/// members are available from macOS 15.0 at run time, so no #available check is
+/// needed, but the macOS 15 SDK (Xcode 16) does not declare them. A helper built
+/// with an older Xcode uses Vision's automatic device and says so.
+#if compiler(>=6.2)
+let canPinComputeDevice = true
+#else
+let canPinComputeDevice = false
+#endif
+
+let computeDeviceNote = "pinning the Vision compute device needs a helper built with Xcode 26 or later; this build uses Vision's automatic device"
+
 /// The Vision compute device for the recognition stages; nil keeps Vision's choice.
 func computeDevice(named name: String) throws -> MLComputeDevice? {
+    if name != "auto" && !canPinComputeDevice {
+        guard ["ane", "neural-engine", "gpu", "cpu"].contains(name) else {
+            throw Failure("unknown --device '\(name)' (auto, ane, gpu, cpu)")
+        }
+        FileHandle.standardError.write("wfinfo-mac: note: --device \(name) ignored: \(computeDeviceNote)\n".data(using: .utf8)!)
+        return nil
+    }
     switch name {
     case "auto": return nil
     case "ane", "neural-engine":
@@ -127,6 +147,7 @@ func deviceName(_ device: MLComputeDevice) -> String {
     }
 }
 
+#if compiler(>=6.2)
 func stageName(_ stage: ComputeStage) -> String {
     switch stage {
     case .main: return "main"
@@ -134,6 +155,7 @@ func stageName(_ stage: ComputeStage) -> String {
     @unknown default: return "\(stage)"
     }
 }
+#endif
 
 /// Swift Vision text request (macOS 15+). A pinned device is set for every
 /// stage that lists it; stages that do not list it keep Vision's choice.
@@ -143,11 +165,13 @@ func makeTextRequest(fast: Bool, correction: Bool, languages: [String], device: 
     request.usesLanguageCorrection = correction
     request.recognitionLanguages = languages.map { Locale.Language(identifier: $0) }
     request.minimumTextHeightFraction = 0
+    #if compiler(>=6.2)
     if let device {
         for (stage, devices) in request.supportedComputeStageDevices where devices.contains(device) {
             request.setComputeDevice(device, for: stage)
         }
     }
+    #endif
     return request
 }
 
@@ -303,15 +327,20 @@ func runOcr(_ raw: ArraySlice<String>) async throws {
 func runDevices() throws {
     let request = makeTextRequest(fast: false, correction: false, languages: ["en-US"], device: nil)
     var stages: [String: [String]] = [:]
+    #if compiler(>=6.2)
     for (stage, devices) in request.supportedComputeStageDevices {
         stages[stageName(stage)] = devices.map(deviceName)
     }
-    printJSON([
+    #endif
+    var answer: [String: Any] = [
         "request": "RecognizeTextRequest (accurate)",
         "revision": "\(request.revision)",
         "allComputeDevices": MLComputeDevice.allComputeDevices.map(deviceName),
         "stages": stages,
-    ])
+        "canPinComputeDevice": canPinComputeDevice,
+    ]
+    if !canPinComputeDevice { answer["note"] = computeDeviceNote }
+    printJSON(answer)
 }
 
 // MARK: - Displays and windows
