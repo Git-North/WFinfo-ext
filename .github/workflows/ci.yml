@@ -59,6 +59,20 @@ jobs:
           WFINFO_DATA_DIR: ${{ runner.temp }}/wfinfo-data
         run: nix develop -c dotnet run --project headless -- --selfcheck
 
+      # The fork's tests (tests/AGENTS.md). Deno for the runner script.
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      # Outside nix develop: the runner's own rustup and linker, so build
+      # scripts and rustc use the same C library. rust-toolchain.toml picks the
+      # compiler version.
+      - name: Tests (test tooling, Rust)
+        run: deno run -A tests/run.ts scripts rust
+
+      - name: Tests (.NET)
+        run: nix develop -c deno run -A tests/run.ts dotnet
+
   dashboard:
     name: Dashboard (Deno gates)
     runs-on: ubuntu-latest
@@ -127,6 +141,11 @@ jobs:
           if [ "$found" -eq 0 ]; then
             echo "No Package.swift under headless/ - skipped."
           fi
+
+      # The fork's tests (tests/AGENTS.md). The swift suite needs macOS (Apple
+      # Vision) and holds the rewards regression; it skips on other hosts.
+      - name: Tests (test tooling, Rust, Swift helper, .NET)
+        run: deno run -A tests/run.ts scripts rust swift dotnet
 
       - name: Dashboard gates
         working-directory: dashboard

@@ -90,7 +90,9 @@
           Condition="$([MSBuild]::IsOSPlatform('OSX'))"
           Inputs="@(RustLayoutSource)"
           Outputs="$(OutDir)libwfinfo_layout.dylib">
-    <Exec Command="cargo build --release --locked --manifest-path &quot;$(MSBuildThisFileDirectory)macos/layout/Cargo.toml&quot;"
+    <!-- cargo rustc with one crate type: the crate also lists rlib (for its
+         tests), and cargo turns LTO off for a build that includes an rlib. -->
+    <Exec Command="cargo rustc --release --locked --lib --crate-type cdylib --manifest-path &quot;$(MSBuildThisFileDirectory)macos/layout/Cargo.toml&quot;"
           EnvironmentVariables="CARGO_TARGET_DIR=$(MSBuildThisFileDirectory)obj/rust-layout" />
     <Copy SourceFiles="$(MSBuildThisFileDirectory)obj/rust-layout/release/libwfinfo_layout.dylib" DestinationFolder="$(OutDir)" />
   </Target>
@@ -105,6 +107,11 @@
 
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="System.Drawing.EnableUnixSupport" Value="true" />
+  </ItemGroup>
+
+  <!-- tests/headless (test code only) calls the runner's internal classes. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="WFInfo.Headless.Tests" />
   </ItemGroup>
 
 </Project>
