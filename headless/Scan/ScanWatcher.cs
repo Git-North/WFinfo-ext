@@ -8,17 +8,26 @@ namespace WFInfo.Scan
 {
     /// <summary>
     /// Automatic scanning: watch Warframe's EE.log and start a scan each time the
-    /// game announces a reward screen, the Linux equivalent of the Windows app's
-    /// "Auto" mode (WFInfo/Data.cs, LogChanged → AutoTriggered).
+    /// game announces a reward screen, the Linux/macOS equivalent of the Windows
+    /// app's "Auto" mode (WFInfo/Data.cs, LogChanged → AutoTriggered; that app
+    /// reads the same lines from the game's debug output, not from the file).
     ///
     /// The expensive parts — OCR engines, the market sheet, the price cache — are
     /// built once by the caller and reused, so the work per trigger is one
     /// capture plus the OCR, which is what keeps the answer fast.
     ///
-    /// Linux polls the log every 250 ms. macOS reacts to file events instead
-    /// (FileSystemWatcher, backed by FSEvents there) and keeps a slow backup
-    /// poll for missed events and rotation; if the watcher fails, it falls back
-    /// to the 250 ms poll.
+    /// The watch is event-based on every OS: a FileSystemWatcher on the log's
+    /// directory, filtered to the log's name (inotify on Linux, FSEvents on
+    /// macOS, ReadDirectoryChangesW on Windows), so a replaced log is still
+    /// seen. A slow backup poll (3 s) covers missed events and a new session's
+    /// replacement. A buffer overflow only forces a read. Any other watcher
+    /// error (for example the inotify watch limit) or a missing directory
+    /// switches to a 250 ms poll and retries the watcher every 10 s.
+    ///
+    /// Under Wine/Proton/CrossOver the game writes EE.log into a normal host
+    /// folder, so host file events fire; the game may buffer its writes, so a
+    /// trigger can arrive late, which the scan's re-capture wait absorbs.
+    /// Only the trigger phrase of a matching line is ever printed.
     /// </summary>
     internal sealed class ScanWatcher
     {
@@ -27,6 +36,9 @@ namespace WFInfo.Scan
 
         /// <summary>Backup poll while file events drive the tail (missed events, rotation).</summary>
         private static readonly TimeSpan BackupPollInterval = TimeSpan.FromSeconds(3);
+
+        /// <summary>After a watcher failure, how long the 250 ms poll runs before the watcher is retried.</summary>
+        private static readonly TimeSpan WatcherRetryInterval = TimeSpan.FromSeconds(10);
 
         private readonly string _logPath;
         private readonly ScanOptions _options;
@@ -56,24 +68,24 @@ namespace WFInfo.Scan
                 $"  trigger: \"Got rewards\" / \"Pause countdown done\" · " +
                 $"re-capture up to {_options.WaitSeconds:0.#} s · cooldown {_options.CooldownSeconds:0.#} s");
 
-            // Null means: poll every PollInterval (Linux, or the macOS fallback).
-            LogEvents events = OperatingSystem.IsMacOS() ? LogEvents.TryStart(_logPath, _out) : null;
+            // Null means: poll every PollInterval until the watcher is retried.
+            LogEvents events = LogEvents.TryStart(_logPath, _out, quiet: false);
+            DateTime retryWatcherAt = events == null ? DateTime.UtcNow + WatcherRetryInterval : DateTime.MaxValue;
             try
             {
                 while (!cancellation.IsCancellationRequested)
                 {
-                    foreach (string line in tail.ReadNewLines())
+                    // Only trigger phrases come back: the rest of EE.log stays inside LogTail.
+                    foreach (string trigger in tail.ReadNewMatches(EeLog.MatchTrigger))
                     {
-                        if (!EeLog.IsRewardTrigger(line)) continue;
-
                         TimeSpan sinceLast = DateTime.UtcNow - lastScanUtc;
                         if (sinceLast.TotalSeconds < _options.CooldownSeconds)
                         {
-                            _out.WriteLine($"  trigger ignored (cooldown): {line.Trim()}");
+                            _out.WriteLine($"  trigger ignored (cooldown): \"{trigger}\"");
                             continue;
                         }
 
-                        _out.WriteLine($"  reward screen detected: {line.Trim()}");
+                        _out.WriteLine($"  reward screen detected: \"{trigger}\"");
                         lastScanUtc = DateTime.UtcNow;
                         lastExit = await _scan().ConfigureAwait(false);
 
@@ -85,9 +97,17 @@ namespace WFInfo.Scan
                     {
                         _out.WriteLine(
                             $"  file events stopped ({failure}); " +
-                            $"polling every {PollInterval.TotalMilliseconds:0} ms");
+                            $"polling every {PollInterval.TotalMilliseconds:0} ms, " +
+                            $"retrying the watcher every {WatcherRetryInterval.TotalSeconds:0} s");
                         events.Dispose();
                         events = null;
+                        retryWatcherAt = DateTime.UtcNow + WatcherRetryInterval;
+                    }
+                    else if (events == null && DateTime.UtcNow >= retryWatcherAt)
+                    {
+                        events = LogEvents.TryStart(_logPath, _out, quiet: true);
+                        retryWatcherAt = events == null ? DateTime.UtcNow + WatcherRetryInterval : DateTime.MaxValue;
+                        if (events != null) _out.WriteLine("  file events on again");
                     }
 
                     try
@@ -153,25 +173,27 @@ namespace WFInfo.Scan
             }
 
             /// <summary>
-            /// Starts the watcher, or prints one line and returns null when it
-            /// cannot start (the caller then polls).
+            /// Starts the watcher, or returns null when it cannot start (the
+            /// caller then polls). Prints one line unless <paramref name="quiet"/>.
             /// </summary>
-            public static LogEvents TryStart(string logPath, TextWriter output)
+            public static LogEvents TryStart(string logPath, TextWriter output, bool quiet)
             {
                 try
                 {
                     string full = Path.GetFullPath(logPath);
                     var events = new LogEvents(Path.GetDirectoryName(full), Path.GetFileName(full));
-                    output.WriteLine(
-                        $"  file events on · backup poll every {BackupPollInterval.TotalSeconds:0} s");
+                    if (!quiet)
+                        output.WriteLine(
+                            $"  file events on · backup poll every {BackupPollInterval.TotalSeconds:0} s");
                     return events;
                 }
                 catch (Exception error) when (error is ArgumentException || error is IOException
                     || error is UnauthorizedAccessException || error is PlatformNotSupportedException)
                 {
-                    output.WriteLine(
-                        $"  file events unavailable ({error.Message}); " +
-                        $"polling every {PollInterval.TotalMilliseconds:0} ms");
+                    if (!quiet)
+                        output.WriteLine(
+                            $"  file events unavailable ({error.Message}); " +
+                            $"polling every {PollInterval.TotalMilliseconds:0} ms");
                     return null;
                 }
             }
@@ -199,7 +221,11 @@ namespace WFInfo.Scan
 
             private void OnError(object sender, ErrorEventArgs e)
             {
-                _failure = e.GetException()?.Message ?? "watcher error";
+                // A full event buffer only means events were lost: the watcher
+                // still works, and the read below catches up. Any other error
+                // stops the watcher (the loop then polls and retries).
+                if (!(e.GetException() is InternalBufferOverflowException))
+                    _failure = e.GetException()?.Message ?? "watcher error";
                 _wake.Writer.TryWrite(true);
             }
 
