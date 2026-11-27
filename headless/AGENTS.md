@@ -48,7 +48,8 @@ code type-checks without WPF/WinForms/Win32.
   and Tesseract links, only for WFInfo's own pipeline). The csproj target
   `BuildMacHelper` compiles the helper with
   `swiftc -target <arch>-apple-macos15.0` next to the runner on macOS only
-  (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`).
+  (swiftc ignores `MACOSX_DEPLOYMENT_TARGET`). The target `PublishMacHelper`
+  copies it into the `dotnet publish` folder, also on macOS only.
 - `Platform/` — seams ONLY: `HeadlessMain.cs` (stub `Main`), `HeadlessServices.cs`
   (window-info service, process finder, screenshot/log-capture stubs,
   `CustomEntrypoint` helpers), `UiSurrogates.cs` (WPF window shapes),
